@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  app:
+    container_name: compass_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - air-config:/root/.air
+    environment:
+      - AIR_CONF=.air.toml
+    command: ["air"]
+
+volumes:
+  air-config:

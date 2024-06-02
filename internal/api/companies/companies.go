@@ -1,6 +1,7 @@
 package companies
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -17,5 +18,6 @@ var companies = []company{
 }
 
 func GetCompanies (c *gin.Context) {
+	fmt.Println("request❗️❗️: ", c)
 	c.IndentedJSON(http.StatusOK, companies)
 }
