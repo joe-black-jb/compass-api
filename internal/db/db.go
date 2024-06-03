@@ -19,8 +19,8 @@ func Connect() {
   }
 
 	cfg := mysql.Config{
-		User: os.Getenv("DBUSER"),
-		Passwd: os.Getenv("DBPASS"),
+		User: os.Getenv("MYSQL_USER"),
+		Passwd: os.Getenv("MYSQL_ROOT_PASSWORD"),
 		Net:    "tcp",
     Addr:   "127.0.0.1:3306",
     DBName: "compass",
