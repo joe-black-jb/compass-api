@@ -6,8 +6,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 var db *sql.DB
@@ -18,26 +19,36 @@ func Connect() {
     log.Fatal("Error loading .env file")
   }
 
-	cfg := mysql.Config{
-		User: os.Getenv("MYSQL_USER"),
-		Passwd: os.Getenv("MYSQL_ROOT_PASSWORD"),
-		Net:    "tcp",
-    Addr:   "127.0.0.1:3306",
-    DBName: "compass",
-		AllowNativePasswords: true,
+	type Product struct {
+		gorm.Model
+		Code  string
+		Price uint
 	}
 
-	var err error
-	db, err = sql.Open("mysql", cfg.FormatDSN())
+	dbuser := os.Getenv("MYSQL_USER")
+	dbpass := os.Getenv("MYSQL_ROOT_PASSWORD")
+	dbname := os.Getenv("MYSQL_DATABASE")
+	dbhost := os.Getenv("MYSQL_HOST")
+	// docker コンテナを立ち上げている場合、ホスト名は 127.0.0.1 ではなくサービス名（db）
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:3306)/%s?charset=utf8mb4&parseTime=True&loc=Local", dbuser, dbpass, dbhost, dbname)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-		log.Fatal(err)
-	}
+    log.Fatal("failed to connect database")
+  }
+	// Migrate the schema
+  db.AutoMigrate(&Product{})
 
-	// TODO ping を通す (通らなくても DB と接続できることは確認済み)
-	// pingErr := db.Ping()
-	// if pingErr != nil {
-	// 	log.Fatal(pingErr)
-	// }
+  // Create
+  db.Create(&Product{Code: "D42", Price: 100})
+  db.Create(&Product{Code: "D41", Price: 200})
+
+  // Read
+  var product Product
+  db.First(&product, 1) // find product with integer primary key
+  // db.First(&product, "code = ?", "D42") // find product with code D42
+	fmt.Println("product🎾: ", product)
+ 
+
 	fmt.Println("Connected⭐️")
 
 }
