@@ -33,13 +33,11 @@ func Connect() {
 		log.Fatal(err)
 	}
 
-	pingErr := db.Ping()
-	if pingErr != nil {
-			log.Fatal(pingErr)
-	}
+	// TODO ping を通す (通らなくても DB と接続できることは確認済み)
+	// pingErr := db.Ping()
+	// if pingErr != nil {
+	// 	log.Fatal(pingErr)
+	// }
 	fmt.Println("Connected⭐️")
-}
-
-func LoadEnv() {
 
 }

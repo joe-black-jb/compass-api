@@ -29,7 +29,10 @@ func Router() {
 
 	router.GET("/companies", companies.GetCompanies)
 
-	err := router.Run("localhost:8080"); 
+	// localhost だと Docker コンテナを立ち上げ外部からリクエストを受けることができないため
+	// 0.0.0.0 に変更
+	// err := router.Run("localhost:8080"); 
+	err := router.Run("0.0.0.0:8080"); 
 	if err != nil {
 		panic(err)
 	}
