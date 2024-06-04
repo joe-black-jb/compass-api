@@ -202,7 +202,7 @@ func main() {
   db.Create(&Gchildtitles)
   db.Create(&Companytitles)
 
-	mysql, err := db.DB()
+	mysql, _ := db.DB()
 	mysql.Close()
 	fmt.Println("Done!! ⭐️")
 }
