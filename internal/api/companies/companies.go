@@ -1,23 +1,17 @@
 package companies
 
 import (
-	"fmt"
 	"net/http"
 
+	"github.com/compass-api/internal"
+	"github.com/compass-api/internal/database"
 	"github.com/gin-gonic/gin"
 )
 
-type company struct {
-	ID string `json:id`
-	Name string `json:name`
-}
-
-var companies = []company{
-	{ID: "1", Name: "YONEX"},
-	{ID: "2", Name: "ミズノ"},
-}
-
 func GetCompanies (c *gin.Context) {
-	fmt.Println("request❗️❗️: ", c)
+	companies := &[]internal.Company{}
+	if err := database.Db.Find(companies).Error; err != nil {
+		c.IndentedJSON(http.StatusNotFound, err)
+	}
 	c.IndentedJSON(http.StatusOK, companies)
 }
