@@ -1,4 +1,4 @@
-module github.com/conmass-api
+module github.com/compass-api
 
 go 1.22.3
 
