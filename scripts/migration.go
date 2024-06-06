@@ -5,38 +5,13 @@ import (
 	"log"
 	"os"
 
+	"github.com/compass-api/internal"
 	"github.com/joho/godotenv"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
-type Company struct {
-	gorm.Model
-	Name  string
-}
-
-type Title struct {
-	gorm.Model
-	Name  string
-	Category string
-	CompanyID int
-	Depth int
-	HasValue bool
-	StatementType int
-	Order int `json:"order" gorm:"default:null"`
-	FiscalYear int
-	Value int
-	ParentTitleId int `json:"parent_title_id" gorm:"default:null"`
-}
-
-type CompanyTitle struct {
-	gorm.Model
-	CompanyID  int `gorm:"primaryKey"`
-	TitleID int `gorm:"primaryKey"`
-	Value int
-}
-
-var Ptiltes = []Title{
+var Ptiltes = []internal.Title{
 	{
 		Name: "流動資産", 
 		Category: "資産", 
@@ -88,7 +63,7 @@ var Ptiltes = []Title{
 	},
 }
 
-var Ctitles = []Title{
+var Ctitles = []internal.Title{
 	{
 		Name: "有形固定資産",
 		Category: "資産",
@@ -124,7 +99,7 @@ var Ctitles = []Title{
 	},
 }
 
-var Gchildtitles = []Title{
+var Gchildtitles = []internal.Title{
 	{
 		Name: "投資有価証券",
 		Category: "資産",
@@ -138,7 +113,7 @@ var Gchildtitles = []Title{
 	},
 }
 
-var Companytitles = []CompanyTitle{
+var Companytitles = []internal.CompanyTitle{
 	{
 		CompanyID: 1,
 		TitleID: 1,
@@ -185,16 +160,16 @@ func main() {
   }
 	
 	// Drop Table
-	db.Migrator().DropTable(&Company{})
-	db.Migrator().DropTable(&Title{})
-	db.Migrator().DropTable(&CompanyTitle{})
+	db.Migrator().DropTable(&internal.Company{})
+	db.Migrator().DropTable(&internal.Title{})
+	db.Migrator().DropTable(&internal.CompanyTitle{})
 	
 	// Migrate the schema
-  db.AutoMigrate(&Company{}, &Title{}, &CompanyTitle{})
+  db.AutoMigrate(&internal.Company{}, &internal.Title{}, &internal.CompanyTitle{})
 
   // Create
-  db.Create(&Company{Name: "ヨネックス"})
-  db.Create(&Company{Name: "ミズノ"})
+  db.Create(&internal.Company{Name: "ヨネックス"})
+  db.Create(&internal.Company{Name: "ミズノ"})
 
 	// Batch Create
   db.Create(&Ptiltes)
