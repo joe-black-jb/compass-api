@@ -3,14 +3,14 @@ package main
 import (
 	"fmt"
 
-	"github.com/conmass-api/internal/api"
-	"github.com/conmass-api/internal/db"
+	"github.com/compass-api/internal/api"
+	"github.com/compass-api/internal/database"
 )
 
 func main() {
 	fmt.Println("Hello World!")
 	// DB接続
-	db.Connect()
+	database.Connect()
 	// ルーター起動
 	api.Router()
 }

@@ -3,10 +3,10 @@ package api
 import (
 	"time"
 
-	"github.com/conmass-api/internal/api/companies"
+	"github.com/compass-api/internal/api/companies"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-) 
+)
 
 func Router() {
 	router := gin.Default()
