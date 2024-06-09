@@ -3,7 +3,6 @@ package api
 import (
 	"time"
 
-	"github.com/compass-api/internal/api/companies"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
@@ -27,7 +26,11 @@ func Router() {
 	// config.AllowOrigins = []string{"http://localhost:3000"}
 	// router.Use(cors.New(config))
 
-	router.GET("/companies", companies.GetCompanies)
+	router.GET("/companies", GetCompanies)
+	router.GET("/titles", GetTitles)
+	// router.GET("/company/:id/with-title", GetCompanyTitles)
+	router.GET("/company/:id/titles", GetCompanyTitles)
+	router.GET("/company/:id", GetCompany)
 
 	// localhost だと Docker コンテナを立ち上げ外部からリクエストを受けることができないため
 	// 0.0.0.0 に変更
