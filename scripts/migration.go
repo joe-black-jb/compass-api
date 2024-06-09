@@ -5,11 +5,17 @@ import (
 	"log"
 	"os"
 
-	"github.com/compass-api/internal"
+	"github.com/joe-black-jb/compass-api/internal"
 	"github.com/joho/godotenv"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
+
+var Companies = []internal.Company{
+	{Name: "ヨネックス株式会社", Established: "1958/06", Capital: "4766"},
+  {Name: "美津濃株式会社", Established: "1906/04", Capital: "26137"},
+  {Name: "株式会社ユニクロ / UNIQLO CO., LTD.", Established: "1974/09/02"},
+}
 
 var Ptiltes = []internal.Title{
 	{
@@ -117,27 +123,27 @@ var Companytitles = []internal.CompanyTitle{
 	{
 		CompanyID: 1,
 		TitleID: 1,
-		Value: 1000,
+		Value: "1000",
 	},
 	{
 		CompanyID: 1,
 		TitleID: 2,
-		Value: 2000,
+		Value: "2000",
 	},
 	{
 		CompanyID: 1,
 		TitleID: 3,
-		Value: 500,
+		Value: "500",
 	},
 	{
 		CompanyID: 1,
 		TitleID: 4,
-		Value: 600,
+		Value: "600",
 	},
 	{
 		CompanyID: 1,
 		TitleID: 5,
-		Value: 1900,
+		Value: "1900",
 	},
 }
 
@@ -168,10 +174,12 @@ func main() {
   db.AutoMigrate(&internal.Company{}, &internal.Title{}, &internal.CompanyTitle{})
 
   // Create
-  db.Create(&internal.Company{Name: "ヨネックス"})
-  db.Create(&internal.Company{Name: "ミズノ"})
+  // db.Create(&internal.Company{Name: "ヨネックス株式会社", Established: "1958/06", Capital: "4766"})
+  // db.Create(&internal.Company{Name: "美津濃株式会社", Established: "1906/04", Capital: "26137"})
+  // db.Create(&internal.Company{Name: "株式会社ユニクロ / UNIQLO CO., LTD.", Established: "1974/09/02"})
 
 	// Batch Create
+	db.Create(&Companies)
   db.Create(&Ptiltes)
   db.Create(&Ctitles)
   db.Create(&Gchildtitles)
