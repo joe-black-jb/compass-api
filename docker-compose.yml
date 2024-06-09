@@ -23,6 +23,7 @@ services:
       TZ: "Asia/Tokyo"
     volumes:
       - ./db-data:/var/lib/mysql
+      - ./my.cnf:/etc/mysql/conf.d/my.cnf
 
 volumes:
   db-data:
