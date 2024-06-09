@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/compass-api/internal/api"
-	"github.com/compass-api/internal/database"
+	"github.com/joe-black-jb/compass-api/internal/api"
+	"github.com/joe-black-jb/compass-api/internal/database"
 )
 
 func main() {
