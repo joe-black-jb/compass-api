@@ -8,3 +8,6 @@ migrate:
 
 lint:
 	go vet ./...
+
+fmt:
+	go fmt ./...

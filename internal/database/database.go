@@ -14,10 +14,10 @@ var Db *gorm.DB
 
 func Connect() {
 	envErr := godotenv.Load()
-  if envErr != nil {
+	if envErr != nil {
 		log.Fatal("Error loading .env file")
-  }
-	
+	}
+
 	DbUser := os.Getenv("MYSQL_USER")
 	DbPass := os.Getenv("MYSQL_ROOT_PASSWORD")
 	DbName := os.Getenv("MYSQL_DATABASE")
@@ -33,8 +33,8 @@ func Connect() {
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:3306)/%s?charset=utf8mb4&parseTime=True&loc=Local", DbUser, DbPass, DbHost, DbName)
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
-    log.Fatal("failed to connect database")
-  }
+		log.Fatal("failed to connect database")
+	}
 
 	fmt.Println("Connected⭐️")
 	Db = db
