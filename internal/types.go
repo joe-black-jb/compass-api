@@ -6,10 +6,11 @@ import (
 
 type Company struct {
 	gorm.Model
-	Name        string
-	Established string
-	Capital     string
-	Titles      []*Title `gorm:"many2many:company_titles;"`
+	Name          string
+	Established   string
+	Capital       string
+	Titles        []*Title        `gorm:"many2many:company_titles;"`
+	CompanyTitles []*CompanyTitle `gorm:"foreignKey:CompanyID"`
 }
 
 type Title struct {
@@ -23,7 +24,9 @@ type Title struct {
 	Order         int `json:"order" gorm:"default:null"`
 	FiscalYear    int
 	Value         string
-	ParentTitleId int `json:"parent_title_id" gorm:"default:null"`
+	ParentTitleId int             `json:"parent_title_id" gorm:"default:null"`
+	Companies     []*Company      `gorm:"many2many:company_titles;"`
+	CompanyTitles []*CompanyTitle `gorm:"foreignKey:TitleID"`
 }
 
 type CompanyTitle struct {
@@ -31,9 +34,11 @@ type CompanyTitle struct {
 	CompanyID int `gorm:"primaryKey"`
 	TitleID   int `gorm:"primaryKey"`
 	Value     string
+	Company   Company `gorm:"foreignKey:CompanyID"`
+	Title     Title   `gorm:"foreignKey:TitleID"`
 }
 
 type UpdateCompanyTitleParams struct {
-	Name string
+	Name  string
 	Value string
 }
