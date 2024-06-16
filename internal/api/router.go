@@ -24,7 +24,7 @@ func Router() {
 	}))
 
 	// リクエスト内容をログ出力
-	// router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {	
+	// router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 	// 	return fmt.Sprintf("%s - [%s] \"%s %s %s %d %s \"%s\" %s\"%s\"\n",
 	// 		param.ClientIP,
 	// 		param.TimeStamp.Format(time.RFC1123),
@@ -51,6 +51,8 @@ func Router() {
 	router.GET("/company/:id/titles", GetCompanyTitles)
 	router.GET("/company/:id", GetCompany)
 	router.PUT("/company/:id/title/:titleId", UpdateCompanyTitles)
+	router.PUT("/title/:id", UpdateTitle)
+	router.GET("/categories", GetCategories)
 
 	// localhost だと Docker コンテナを立ち上げ外部からリクエストを受けることができないため
 	// 0.0.0.0 に変更
