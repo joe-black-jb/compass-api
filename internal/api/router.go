@@ -53,6 +53,7 @@ func Router() {
 	router.PUT("/company/:id/title/:titleId", UpdateCompanyTitles)
 	router.PUT("/title/:id", UpdateTitle)
 	router.GET("/categories", GetCategories)
+	router.POST("/title", CreateTitle)
 
 	// localhost だと Docker コンテナを立ち上げ外部からリクエストを受けることができないため
 	// 0.0.0.0 に変更

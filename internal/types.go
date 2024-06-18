@@ -42,3 +42,21 @@ type UpdateCompanyTitleParams struct {
 	Name  string
 	Value string
 }
+
+type CreateTitleBody struct {
+	Name          *string
+	Category      *string
+	CompanyID     *int
+	Depth         *int
+	HasValue      *bool
+	StatementType *int
+	Order         *int 
+	FiscalYear    *int
+	Value         *string
+	ParentTitleId *int
+}
+
+type Error struct {
+	Status int
+	Message string
+}

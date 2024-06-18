@@ -131,8 +131,56 @@ func GetCategories(c *gin.Context) {
 			categories = append(categories, title.Category)
 		}
 	}
-	fmt.Println("カテゴリー一覧: ", categories)
+	c.JSON(http.StatusOK, categories)
+}
 
-	// TODO: return 処理
-
+func CreateTitle(c *gin.Context) {
+	var reqBody internal.CreateTitleBody
+	if err := c.ShouldBindJSON(&reqBody); err != nil {
+		fmt.Println("err: ", err)
+		c.JSON(http.StatusNotFound, err)
+		return
+	}
+	var errors []string
+	if reqBody.Category == nil{
+		errors = append(errors, "区分")
+	}
+	if reqBody.CompanyID  == nil{
+		errors = append(errors, "会社ID")
+	}
+	if reqBody.Name == nil {
+		errors = append(errors, "項目名")
+	}
+	if reqBody.ParentTitleId == nil {
+		errors = append(errors, "親項目ID")
+	}
+	if len(errors) > 0 {
+		err := &internal.Error{}
+		err.Status = http.StatusBadRequest
+		err.Message = fmt.Sprintf("項目が不足しています。不足している項目: %v", errors)
+		c.JSON(http.StatusBadRequest, err)
+		return
+	}
+	if reqBody.Depth == nil {
+		defaultDepth := 1
+		reqBody.Depth = &defaultDepth
+	}
+	if reqBody.HasValue == nil {
+		defaultHasValue := true
+		reqBody.HasValue = &defaultHasValue
+	}
+	if reqBody.StatementType == nil {
+		defaultStatementType := 1
+		reqBody.StatementType = &defaultStatementType
+	}
+	if reqBody.FiscalYear == nil {
+		defaultFiscalYear := 2023
+		reqBody.FiscalYear = &defaultFiscalYear
+	}
+	if reqBody.Order == nil {
+		defaultOrder := 99
+		reqBody.Order = &defaultOrder
+	}
+	fmt.Println("reqBody: ", reqBody);
+	c.JSON(http.StatusOK, reqBody)
 }
