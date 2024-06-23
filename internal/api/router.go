@@ -13,8 +13,8 @@ func Router() {
 	// router.SetTrustedProxies(trustedProxies)
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:3000"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Access-Control-Allow-Origin"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		AllowOriginFunc: func(origin string) bool {
@@ -54,6 +54,7 @@ func Router() {
 	router.PUT("/title/:id", UpdateTitle)
 	router.GET("/categories", GetCategories)
 	router.POST("/title", CreateTitle)
+	router.DELETE("/title/:id", DeleteTitle)
 
 	// localhost だと Docker コンテナを立ち上げ外部からリクエストを受けることができないため
 	// 0.0.0.0 に変更
