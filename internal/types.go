@@ -6,7 +6,7 @@ import (
 
 type Company struct {
 	gorm.Model
-	Name          string
+	Name          string `gorm:"unique"`
 	Established   string
 	Capital       string
 	Titles        []*Title        `gorm:"many2many:company_titles;"`
@@ -15,9 +15,9 @@ type Company struct {
 
 type Title struct {
 	gorm.Model
-	Name          string
+	Name          string `gorm:"type:varchar(255);uniqueIndex:name_company_unique"`
 	Category      string
-	CompanyID     int
+	CompanyID     int `gorm:"type:varchar(255);uniqueIndex:name_company_unique"`
 	Depth         int
 	HasValue      bool
 	StatementType int
