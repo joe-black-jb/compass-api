@@ -88,7 +88,7 @@ func GetCompanyTitles(c *gin.Context) {
 			return
 		}
 		return
-	} 
+	}
 	fmt.Println("ID 1 の会社が持つ項目: ", Company)
 	c.IndentedJSON(http.StatusOK, Company)
 }
@@ -112,7 +112,7 @@ func UpdateCompanyTitles(c *gin.Context) {
 
 func UpdateTitle(c *gin.Context) {
 	id := c.Param("id")
-	var reqBody internal.CreateTitleBody 
+	var reqBody internal.CreateTitleBody
 	title := &internal.Title{}
 	if err := database.Db.First(title, id).Error; err != nil {
 		err := &internal.Error{}
@@ -127,7 +127,7 @@ func UpdateTitle(c *gin.Context) {
 		return
 	}
 	// body 作成処理
-	errors, updates:= ConvertUpdateTitleBody(&reqBody)
+	errors, updates := ConvertUpdateTitleBody(&reqBody)
 	if len(errors) > 0 {
 		err := &internal.Error{}
 		err.Status = http.StatusBadRequest
@@ -181,7 +181,7 @@ func CreateTitle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, err)
 		return
 	}
-	
+
 	// body 作成処理
 	errors, ok := ConvertTitleBody(title, &reqBody)
 	if len(errors) > 0 {
@@ -191,16 +191,16 @@ func CreateTitle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, err)
 		return
 	}
-	if (!ok) {
+	if !ok {
 		err := &internal.Error{}
 		err.Status = http.StatusBadRequest
 		err.Message = "項目登録処理に失敗しました"
 		c.JSON(http.StatusBadRequest, err)
 		return
 	}
-	// トランザクション処理	
+	// トランザクション処理
 	tx := database.Db.Begin()
-	database.Db.Transaction(func(tx *gorm.DB) error{
+	database.Db.Transaction(func(tx *gorm.DB) error {
 		// 1. titles テーブルにレコード追加
 		if err := tx.Create(&title).Error; err != nil {
 			tx.Rollback()
@@ -264,7 +264,7 @@ func DeleteTitle(c *gin.Context) {
 
 	// トランザクション処理
 	tx := database.Db.Begin()
-	database.Db.Transaction(func(tx *gorm.DB) error{
+	database.Db.Transaction(func(tx *gorm.DB) error {
 		// 1. company_titles からレコードを削除
 		companyTitle := &internal.CompanyTitle{}
 		if err := tx.Where("title_id = ? AND company_id = ?", titleId, title.CompanyID).Unscoped().Delete(&companyTitle).Error; err != nil {

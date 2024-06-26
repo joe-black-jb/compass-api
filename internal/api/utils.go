@@ -4,12 +4,12 @@ import (
 	"github.com/joe-black-jb/compass-api/internal"
 )
 
-func ConvertTitleBody (title *internal.Title, reqBody *internal.CreateTitleBody) (errors []string, ok bool) {
+func ConvertTitleBody(title *internal.Title, reqBody *internal.CreateTitleBody) (errors []string, ok bool) {
 	// 必須項目: 区分、会社ID、項目名、親項目ID
-	if reqBody.Category == nil{
+	if reqBody.Category == nil {
 		errors = append(errors, "区分")
 	}
-	if reqBody.CompanyID  == nil{
+	if reqBody.CompanyID == nil {
 		errors = append(errors, "会社ID")
 	}
 	if reqBody.Name == nil {
@@ -56,21 +56,21 @@ func ConvertTitleBody (title *internal.Title, reqBody *internal.CreateTitleBody)
 	return nil, true
 }
 
-func ConvertUpdateTitleBody (reqBody *internal.CreateTitleBody) (errors []string, result map[string]interface{}) {
+func ConvertUpdateTitleBody(reqBody *internal.CreateTitleBody) (errors []string, result map[string]interface{}) {
 	updates := make(map[string]interface{})
-	if reqBody.Name != nil{
+	if reqBody.Name != nil {
 		updates["Name"] = *reqBody.Name
 	}
-	if reqBody.Category != nil{
+	if reqBody.Category != nil {
 		updates["Category"] = *reqBody.Category
 	}
-	if reqBody.ParentTitleId != nil{
+	if reqBody.ParentTitleId != nil {
 		updates["ParentTitleId"] = *reqBody.ParentTitleId
 	}
-	if reqBody.CompanyID != nil{
+	if reqBody.CompanyID != nil {
 		updates["CompanyID"] = *reqBody.CompanyID
 	}
-	if reqBody.Value != nil{
+	if reqBody.Value != nil {
 		updates["Value"] = *reqBody.Value
 	}
 	return nil, updates

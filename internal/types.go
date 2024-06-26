@@ -50,13 +50,13 @@ type CreateTitleBody struct {
 	Depth         *int
 	HasValue      *bool
 	StatementType *int
-	Order         *int 
+	Order         *int
 	FiscalYear    *int
 	Value         *string
 	ParentTitleId *int
 }
 
 type Error struct {
-	Status int
+	Status  int
 	Message string
 }
