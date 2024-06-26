@@ -1,6 +1,8 @@
 package api
 
-import "github.com/joe-black-jb/compass-api/internal"
+import (
+	"github.com/joe-black-jb/compass-api/internal"
+)
 
 func ConvertTitleBody (title *internal.Title, reqBody *internal.CreateTitleBody) (errors []string, ok bool) {
 	// 必須項目: 区分、会社ID、項目名、親項目ID
