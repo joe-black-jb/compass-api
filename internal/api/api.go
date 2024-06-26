@@ -31,10 +31,6 @@ func GetCompany(c *gin.Context) {
 
 func GetTitles(c *gin.Context) {
 	parentOnly := c.Query("parent_only")
-	// query := c.Param("")
-	fmt.Println("parent_only クエリー: ", parentOnly)
-	// fmt.Println(fmt.Sprintf("クエリーの型: %T", parentOnly))
-
 	Titles := &[]internal.Title{}
 	if err := database.Db.Find(Titles).Error; err != nil {
 		c.IndentedJSON(http.StatusNotFound, err)
@@ -58,8 +54,6 @@ func GetTitles(c *gin.Context) {
 
 func GetCompanyTitles(c *gin.Context) {
 	Id := c.Param("id")
-	fmt.Println("パラメータのID: ", Id)
-	fmt.Println("id の型: ", fmt.Sprintf("%T", Id))
 	Company := &internal.Company{}
 	if err := database.Db.Preload("Titles").First(Company, Id).Error; err != nil {
 		c.IndentedJSON(http.StatusNotFound, err)
@@ -108,17 +102,11 @@ func UpdateCompanyTitles(c *gin.Context) {
 		c.JSON(http.StatusNotFound, err)
 		return
 	}
-	fmt.Println("リクエストBody: ", reqParams)
 	companyTitle := &internal.CompanyTitle{}
 	if err := database.Db.Preload("Company").Preload("Title").Where("company_id = ? AND title_id = ?", id, titleId).First(&companyTitle).Error; err != nil {
-		fmt.Println("DB検索エラー❗️: ", err)
-		fmt.Println(fmt.Sprintf("エラーの型: %T", err))
-		// fmt.Println(fmt.Sprintf("エラーの型: %T", err.Error()))
-		// fmt.Println(fmt.Sprintf("エラーの型: %T", string(err.Error())))
 		c.JSON(http.StatusNotFound, err.Error())
 		return
 	}
-	fmt.Println("companyTitle: ", companyTitle)
 	c.JSON(http.StatusOK, companyTitle)
 }
 
@@ -182,6 +170,18 @@ func CreateTitle(c *gin.Context) {
 		c.JSON(http.StatusNotFound, err)
 		return
 	}
+	// すでに存在する項目の場合エラーを返す
+	var duplicatedTitles = &[]internal.Title{}
+	database.Db.Where("name = ? AND company_id = ?", reqBody.Name, reqBody.CompanyID).Find(duplicatedTitles)
+
+	if len(*duplicatedTitles) > 0 {
+		err := &internal.Error{}
+		err.Status = http.StatusBadRequest
+		err.Message = fmt.Sprintf("項目が既に登録されています。項目名: %v", *reqBody.Name)
+		c.JSON(http.StatusBadRequest, err)
+		return
+	}
+	
 	// body 作成処理
 	errors, ok := ConvertTitleBody(title, &reqBody)
 	if len(errors) > 0 {
@@ -239,6 +239,25 @@ func DeleteTitle(c *gin.Context) {
 		errObj := &internal.Error{}
 		errObj.Status = http.StatusBadRequest
 		errObj.Message = fmt.Sprintf("削除対象項目が見つかりませんでした。項目ID: %v", titleId)
+		c.JSON(http.StatusBadRequest, errObj)
+		return
+	}
+
+	// 紐づく子項目がある場合は削除しない
+	// => 削除しようとしているタイトルが parent_title_id に入っている title がある場合
+	titles := &[]internal.Title{}
+	if err := database.Db.Where("parent_title_id = ?", titleId).Find(titles).Error; err != nil {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusInternalServerError
+		errObj.Message = fmt.Sprintf("指定した項目と紐づく項目取得処理でエラーが発生しました。項目ID: %v", titleId)
+		c.JSON(http.StatusInternalServerError, errObj)
+		return
+	}
+
+	if len(*titles) > 0 {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusBadRequest
+		errObj.Message = "指定した項目に紐づく項目が存在するため削除できません"
 		c.JSON(http.StatusBadRequest, errObj)
 		return
 	}
