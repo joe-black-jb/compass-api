@@ -3,12 +3,16 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/joe-black-jb/compass-api/internal"
 	"github.com/joe-black-jb/compass-api/internal/database"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -289,4 +293,121 @@ func DeleteTitle(c *gin.Context) {
 	tx.Commit()
 	deletedMsg := fmt.Sprintf("項目を削除しました。項目名: %v", title.Name)
 	c.JSON(http.StatusOK, deletedMsg)
+}
+
+func RegisterUser(c *gin.Context) {
+	var reqBody internal.RegisterUserBody
+	fmt.Println("ハッシュ化開始❗️")
+	if err := c.ShouldBindJSON(&reqBody); err != nil {
+		fmt.Println("err: ", err)
+		c.JSON(http.StatusNotFound, err)
+	}
+	var errors []string
+	if reqBody.Name == nil{
+		errors = append(errors, "名前")
+	}
+	if reqBody.Password == nil {
+		errors = append(errors, "パスワード")
+	} 
+	if reqBody.Email == nil {
+		errors = append(errors, "メールアドレス")
+	}
+	if len(errors) > 0 {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusBadRequest
+		errObj.Message = fmt.Sprintf("未入力の項目があります。項目: %v", errors)
+		c.JSON(http.StatusBadRequest, errObj)
+		return
+	}
+	// メールアドレス重複チェック
+	users := &[]internal.User{}
+	database.Db.Where("email = ?", reqBody.Email).First(&users)
+	if len(*users) > 0 {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusBadRequest
+		errObj.Message = ("入力されたメールアドレスは既に登録されています")
+		c.JSON(http.StatusBadRequest, errObj)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(*reqBody.Password), bcrypt.DefaultCost)
+	if err != nil {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusInternalServerError
+		errObj.Message = "パスワードの暗号化処理に失敗しました"
+		c.JSON(http.StatusInternalServerError, errObj)
+		return
+	}
+	user := &internal.User{}
+	user.Name = *reqBody.Name
+	user.Email = *reqBody.Email
+	user.Password = hash
+	user.Admin = false
+
+	// DB登録
+	if err := database.Db.Create(&user).Error; err != nil {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusInternalServerError
+		errObj.Message = "ユーザ登録処理に失敗しました"
+		c.JSON(http.StatusInternalServerError, errObj)
+		return
+	}
+
+	c.JSON(http.StatusOK, "ユーザ登録に成功しました")
+}
+
+func Login(c *gin.Context) {
+	fmt.Println("ログイン処理開始")
+	var reqBody internal.Credentials
+	user := &internal.User{}
+	if err := c.ShouldBindJSON(&reqBody); err != nil {
+		fmt.Println("err: ", err)
+		c.JSON(http.StatusNotFound, err)
+		return
+	}
+	fmt.Println("user: ", user)
+	if err := database.Db.Where("email = ?", reqBody.Email).First(user).Error; err != nil {
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusBadRequest
+		errObj.Message = "入力されたメールアドレスは登録されていません"
+		c.JSON(http.StatusInternalServerError, errObj)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword(user.Password, []byte(reqBody.Password)); err != nil {
+		fmt.Println("エラー発生: ", err)
+		errObj := &internal.Error{}
+		errObj.Status = http.StatusBadRequest
+		errObj.Message = "入力されたパスワードに誤りがあります"
+		c.JSON(http.StatusInternalServerError, errObj)
+		return
+	}
+	// jwt トークンの生成
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": user.Name,
+		"exp": time.Now().Add(time.Hour * 24).Unix(),
+		"admin": user.Admin,
+	})
+
+	// 秘密鍵の確認
+  jwtSecret := os.Getenv("SECRET_KEY")
+	if jwtSecret == "" {
+		c.JSON(http.StatusInternalServerError, "err")
+		return
+	}
+
+	// トークンの署名
+	tokenString, err := token.SignedString([]byte(jwtSecret))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error while generating token"})
+		return
+	}
+	fmt.Println("tokenString: ", tokenString)
+	// token.Raw = tokenString
+	// signature := strings.Split(tokenString, ".")[2]
+	// fmt.Println("signature: ", signature)
+	// token.Signature = signature
+
+	okObj := &internal.Ok{}
+	okObj.Status = http.StatusOK
+	okObj.Message = "認証に成功しました"
+	c.JSON(http.StatusOK, tokenString)
 }
