@@ -11,6 +11,16 @@ import (
 	"gorm.io/gorm"
 )
 
+var Users = []internal.User{
+	// Password: pass のハッシュ値
+	{
+		Name: "サンプルユーザ", 
+		Password: []byte("$2a$10$lbnP92Wdad2olUA18I1Xbe21Zuma6eoriPCmohCxAku8Bdzo3.SL2"), 
+		Email: "sample@sample.com",
+		Admin: false,
+	},
+}
+
 var Companies = []internal.Company{
 	{Name: "ヨネックス株式会社", Established: "1958/06", Capital: "4766"},
 	{Name: "美津濃株式会社", Established: "1906/04", Capital: "26137"},
@@ -369,9 +379,10 @@ func main() {
 	db.Migrator().DropTable(&internal.Company{})
 	db.Migrator().DropTable(&internal.Title{})
 	db.Migrator().DropTable(&internal.CompanyTitle{})
+	db.Migrator().DropTable(&internal.User{})
 
 	// Migrate the schema
-	db.AutoMigrate(&internal.Company{}, &internal.Title{}, &internal.CompanyTitle{})
+	db.AutoMigrate(&internal.Company{}, &internal.Title{}, &internal.CompanyTitle{}, &internal.User{})
 
 	// Create
 	// db.Create(&internal.Company{Name: "ヨネックス株式会社", Established: "1958/06", Capital: "4766"})
@@ -381,6 +392,7 @@ func main() {
 	// Batch Create
 	db.Create(&Companies)
 	db.Create(&Titles)
+	db.Create(&Users)
 
 	// db.Create(&CompanyTitles)
 
