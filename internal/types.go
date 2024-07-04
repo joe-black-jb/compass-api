@@ -4,6 +4,14 @@ import (
 	"gorm.io/gorm"
 )
 
+type User struct {
+	gorm.Model
+	Name string
+	Email string `gorm:"unique"`
+	Password []byte
+	Admin bool
+}
+
 type Company struct {
 	gorm.Model
 	Name          string `gorm:"unique"`
@@ -59,4 +67,20 @@ type CreateTitleBody struct {
 type Error struct {
 	Status  int
 	Message string
+}
+
+type Ok struct {
+	Status int
+	Message string
+}
+
+type Credentials struct {
+	Email string
+	Password string
+}
+
+type RegisterUserBody struct {
+	Name *string
+	Email *string
+	Password *string
 }
