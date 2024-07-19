@@ -369,7 +369,7 @@ func Login(c *gin.Context) {
 		errObj := &internal.Error{}
 		errObj.Status = http.StatusBadRequest
 		errObj.Message = "入力されたメールアドレスは登録されていません"
-		c.JSON(http.StatusInternalServerError, errObj)
+		c.JSON(http.StatusBadRequest, errObj)
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword(user.Password, []byte(reqBody.Password)); err != nil {
@@ -409,5 +409,18 @@ func Login(c *gin.Context) {
 	okObj := &internal.Ok{}
 	okObj.Status = http.StatusOK
 	okObj.Message = "認証に成功しました"
-	c.JSON(http.StatusOK, tokenString)
+
+	loginResult := internal.Login{}
+	loginResult.Username = user.Name
+	loginResult.Token = tokenString
+	c.JSON(http.StatusOK, loginResult)
+}
+
+func AuthUser(c *gin.Context) {
+	isAdmin, _ := c.Get("isAdmin")
+	if isAdmin == true {
+		c.JSON(http.StatusOK, true)
+	} else {
+		c.JSON(http.StatusOK, false)
+	}
 }
