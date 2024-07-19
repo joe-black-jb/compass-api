@@ -84,3 +84,8 @@ type RegisterUserBody struct {
 	Email *string
 	Password *string
 }
+
+type Login struct {
+	Username string
+	Token string
+}
