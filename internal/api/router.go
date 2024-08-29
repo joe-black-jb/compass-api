@@ -1,11 +1,74 @@
 package api
 
 import (
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v4"
 )
+
+// JWT認証ミドルウェア
+func AuthMiddleware() gin.HandlerFunc {
+	var jwtSecret = os.Getenv("SECRET_KEY")
+	// var jwtSecret = []byte(os.Getenv("SECRET_KEY"))
+	return func(c *gin.Context) {
+		// Authorizationヘッダーからトークンを取得
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+			c.Abort()
+			return
+		}
+
+		// Bearer 部分を除去しトークンを取得
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString == authHeader {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token format"})
+			c.Abort()
+			return
+		}
+
+		// トークンの検証
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			// 署名方法の確認
+			if token.Method.Alg() != "HS256" {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(jwtSecret), nil
+		})
+		if err != nil {
+			fmt.Println("err ❗️ : ", err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			// c.JSON(http.StatusUnauthorized, err.Error())
+			c.JSON(http.StatusUnauthorized, token)
+			c.Abort()
+			return
+		}
+
+		// トークンが有効か確認
+		claims, ok := token.Claims.(jwt.MapClaims)
+		fmt.Println("claims ❗️: ", claims)
+		fmt.Println("ok ❗️: ", ok)
+		if ok && token.Valid {
+			// ユーザー名をコンテキストに設定
+			c.Set("username", claims["username"])
+			c.Set("isAdmin", claims["admin"])
+		} else {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		// 次のハンドラーを実行
+		c.Next()
+
+	}
+}
 
 func Router() {
 	router := gin.Default()
@@ -48,6 +111,7 @@ func Router() {
 	router.GET("/companies", GetCompanies)
 	router.GET("/titles", GetTitles)
 	// router.GET("/company/:id/with-title", GetCompanyTitles)
+	// 一時的にコメントアウト↓
 	router.GET("/company/:id/titles", GetCompanyTitles)
 	router.GET("/company/:id", GetCompany)
 	router.PUT("/company/:id/title/:titleId", UpdateCompanyTitles)
@@ -55,6 +119,16 @@ func Router() {
 	router.GET("/categories", GetCategories)
 	router.POST("/title", CreateTitle)
 	router.DELETE("/title/:id", DeleteTitle)
+	router.POST("/register", RegisterUser)
+	router.POST("/login", Login)
+
+	// 認証が必要なエンドポイント
+	auth := router.Group("/")
+	auth.Use(AuthMiddleware())
+	{
+		// auth.GET("/company/:id/titles", GetCompanyTitles)
+		auth.GET("/user/auth", AuthUser)
+	}
 
 	// localhost だと Docker コンテナを立ち上げ外部からリクエストを受けることができないため
 	// 0.0.0.0 に変更
