@@ -82,8 +82,8 @@ func main() {
 	// os.Remove(path)
 
 	// XBRLファイルの取得
-	parentPath := filepath.Join("XBRL", docID, XBRLFilepath)
-	// parentPath := filepath.Join("XBRL", docID, "XBRL", "PublicDoc", "jpsps070000-asr-001_G07493-000_2023-11-06_01_2024-02-01.xml")
+	// parentPath := filepath.Join("XBRL", docID, XBRLFilepath)
+	parentPath := filepath.Join("XBRL", docID, "XBRL", "PublicDoc", "jpsps070000-asr-001_G07493-000_2023-11-06_01_2024-02-01.xml")
 	XBRLFile, err := os.Open(parentPath)
 	if err != nil {
 		fmt.Println("XBRL open err: ", err)
@@ -94,20 +94,72 @@ func main() {
 		fmt.Println("XBRL read err: ", err)
 		return
 	}
-	fmt.Println("string(body): ", string(body))
-	type XBRL struct {
-		// BalanceSheetTextBlock string `xml:"jpsps_cor:BalanceSheetTextBlock"`
-		BalanceSheetTextBlock string `xml:"xml"`
-		// BalanceSheetTextBlock string `xml:"xbrli:xbrl"`
+	// // Chat GPT (ver.1) /////////
+	// <link:schemaRef> 要素
+	type SchemaRef struct {
+		Href string `xml:"xlink:href,attr"`
+		Type string `xml:"xlink:type,attr"`
 	}
-	var xbrl XBRL
+
+	// <xbrli:identifier> 要素
+	type Identifier struct {
+		Scheme string `xml:"scheme,attr"`
+		Value  string `xml:",chardata"`
+	}
+
+	// <xbrli:entity> 要素
+	type Entity struct {
+		Identifier Identifier `xml:"identifier"`
+	}
+
+	// <xbrli:period> 要素
+	type Period struct {
+		Instant string `xml:"instant"`
+	}
+
+	// <xbrli:context> 要素
+	type Context struct {
+		ID     string `xml:"id,attr"`
+		Entity Entity `xml:"entity"`
+		Period Period `xml:"period"`
+	}
+
+	// <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
+	type MoneyHeldInTrust struct {
+		ContextRef string `xml:"contextRef,attr"`
+		Decimals   string `xml:"decimals,attr"`
+		UnitRef    string `xml:"unitRef,attr"`
+		Value      string `xml:",chardata"`
+	}
+
+	// XML全体のルート構造体
+	type XBRL struct {
+		XMLName          xml.Name         `xml:"xbrl"`
+		SchemaRef        SchemaRef        `xml:"schemaRef"`
+		Contexts         []Context        `xml:"context"`
+		MoneyHeldInTrust MoneyHeldInTrust `xml:"MoneyHeldInTrustCAFND"`
+	}
+	/////////////////////////////////
+
 	// fmt.Println("string(body): ", string(body))
+	var xbrl XBRL
 	err = xml.Unmarshal(body, &xbrl)
 	if err != nil {
 		fmt.Println("XBRL Unmarshal err: ", err)
 		return
 	}
 	fmt.Println("Unmarshal 後: ", xbrl)
+
+	// パース結果の表示
+	fmt.Printf("SchemaRef Href: %s\n", xbrl.SchemaRef.Href)
+	for _, context := range xbrl.Contexts {
+		fmt.Printf("Context ID: %s\n", context.ID)
+		fmt.Printf("Entity Identifier Scheme: %s\n", context.Entity.Identifier.Scheme)
+		fmt.Printf("Entity Identifier Value: %s\n", context.Entity.Identifier.Value)
+		fmt.Printf("Period Instant: %s\n", context.Period.Instant)
+	}
+	// 結果の表示
+	fmt.Printf("Money Held in Trust: %v\n", xbrl.MoneyHeldInTrust)
 
 	// 手動で作成
 	text := `
@@ -123,6 +175,7 @@ func main() {
               </xbrli:period>
             </xbrli:context>
     </xbrli:xbrl>
+		<jppfs_cor:MoneyHeldInTrustCAFND contextRef="Prior1YearInstant_NonConsolidatedMember" decimals="0" unitRef="JPY">8468659</jppfs_cor:MoneyHeldInTrustCAFND>
   `
 	type Sample struct {
 		Xml string `xml:"xbrli:xbrl"`
@@ -133,52 +186,7 @@ func main() {
 	}
 	fmt.Println("sample: ", sample)
 
-	// // Chat GPT (ver.1) /////////
-	// // <link:schemaRef> 要素
-	// type SchemaRef struct {
-	// 	Href string `xml:"xlink:href,attr"`
-	// 	Type string `xml:"xlink:type,attr"`
-	// }
-
-	// // <xbrli:identifier> 要素
-	// type Identifier struct {
-	// 	Scheme string `xml:"scheme,attr"`
-	// 	Value  string `xml:",chardata"`
-	// }
-
-	// // <xbrli:entity> 要素
-	// type Entity struct {
-	// 	Identifier Identifier `xml:"identifier"`
-	// }
-
-	// // <xbrli:period> 要素
-	// type Period struct {
-	// 	Instant string `xml:"instant"`
-	// }
-
-	// // <xbrli:context> 要素
-	// type Context struct {
-	// 	ID     string `xml:"id,attr"`
-	// 	Entity Entity `xml:"entity"`
-	// 	Period Period `xml:"period"`
-	// }
-
-  // // <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
-  // type MoneyHeldInTrust struct {
-  //   ContextRef string `xml:"contextRef,attr"`
-  //   Decimals   string `xml:"decimals,attr"`
-  //   UnitRef    string `xml:"unitRef,attr"`
-  //   Value      string `xml:",chardata"`
-  // }
-
-	// // XML全体のルート構造体
-	// type XBRL2 struct {
-	// 	XMLName   xml.Name  `xml:"xbrl"`
-	// 	SchemaRef SchemaRef `xml:"schemaRef"`
-	// 	Contexts  []Context `xml:"context"`
-  //   MoneyHeldInTrust MoneyHeldInTrust `xml:"jppfs_cor:MoneyHeldInTrustCAFND"`
-	// }
-  /////////////////////////////////
+	
 
 	// xmlData := `
 	// <?xml version="1.0" encoding="UTF-8"?>
@@ -195,98 +203,74 @@ func main() {
 	// </xbrli:xbrl>
 	// `
 
+	// Chat GPT (ver.2) /////////////
+	//   // XMLの名前空間とタグに対応する構造体を定義
+	// // <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
+	// type MoneyHeldInTrust struct {
+	// 	ContextRef string `xml:"contextRef,attr"`
+	// 	Decimals   string `xml:"decimals,attr"`
+	// 	UnitRef    string `xml:"unitRef,attr"`
+	// 	Value      string `xml:",chardata"`
+	// }
 
-  // Chat GPT (ver.2) /////////////
-  // XMLの名前空間とタグに対応する構造体を定義
+	// // <xbrli:unit> タグをパースする構造体
+	// type Unit struct {
+	// 	ID      string   `xml:"id,attr"`
+	// 	Measure string   `xml:"xbrli:measure"`
+	// }
 
+	// // <xbrldi:explicitMember> タグの構造体
+	// type ExplicitMember struct {
+	// 	Dimension string `xml:"dimension,attr"`
+	// 	Value     string `xml:",chardata"`
+	// }
 
+	// // <xbrli:scenario> タグの構造体
+	// type Scenario struct {
+	// 	ExplicitMember ExplicitMember `xml:"xbrldi:explicitMember"`
+	// }
 
-// <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
-type MoneyHeldInTrust struct {
-	ContextRef string `xml:"contextRef,attr"`
-	Decimals   string `xml:"decimals,attr"`
-	UnitRef    string `xml:"unitRef,attr"`
-	Value      string `xml:",chardata"`
-}
+	//   // <xbrli:period> タグの構造体
+	// type Period struct {
+	// 	StartDate string `xml:"xbrli:startDate,omitempty"`
+	// 	EndDate   string `xml:"xbrli:endDate,omitempty"`
+	// 	Instant   string `xml:"xbrli:instant,omitempty"`
+	// }
 
-
-// <xbrli:unit> タグをパースする構造体
-type Unit struct {
-	ID      string   `xml:"id,attr"`
-	Measure string   `xml:"xbrli:measure"`
-}
-
-
-// <xbrldi:explicitMember> タグの構造体
-type ExplicitMember struct {
-	Dimension string `xml:"dimension,attr"`
-	Value     string `xml:",chardata"`
-}
-
-
-// <xbrli:scenario> タグの構造体
-type Scenario struct {
-	ExplicitMember ExplicitMember `xml:"xbrldi:explicitMember"`
-}
-
-  // <xbrli:period> タグの構造体
-type Period struct {
-	StartDate string `xml:"xbrli:startDate,omitempty"`
-	EndDate   string `xml:"xbrli:endDate,omitempty"`
-	Instant   string `xml:"xbrli:instant,omitempty"`
-}
-
-  // <xbrli:identifier> タグの構造体
-type Identifier struct {
-	Scheme string `xml:"scheme,attr"`
-	Value  string `xml:",chardata"`
-}
-  // <xbrli:entity> タグの構造体
-type Entity struct {
-	Identifier Identifier `xml:"xbrli:identifier"`
-}
-  // <xbrli:context> タグをパースする構造体
-type Context struct {
-	ID     string   `xml:"id,attr"`
-	Entity Entity   `xml:"xbrli:entity"`
-	Period Period   `xml:"xbrli:period"`
-	Scenario Scenario `xml:"xbrli:scenario"`
-}
-type XBRL2 struct {
-	// XMLName xml.Name  `xml:"xbrli:xbrl"`
-	// XMLName xml.Name  `xml:"xbrli"`
-	XMLName xml.Name  `xml:"xbrl"`
-	Contexts []Context `xml:"xbrli:context"`
-	Units    []Unit    `xml:"xbrli:unit"`
-	MoneyHeldInTrust MoneyHeldInTrust `xml:"jppfs_cor:MoneyHeldInTrustCAFND"`
-}
-
-
-
-
-
-
+	//   // <xbrli:identifier> タグの構造体
+	// type Identifier struct {
+	// 	Scheme string `xml:"scheme,attr"`
+	// 	Value  string `xml:",chardata"`
+	// }
+	//   // <xbrli:entity> タグの構造体
+	// type Entity struct {
+	// 	Identifier Identifier `xml:"xbrli:identifier"`
+	// }
+	//   // <xbrli:context> タグをパースする構造体
+	// type Context struct {
+	// 	ID     string   `xml:"id,attr"`
+	// 	Entity Entity   `xml:"xbrli:entity"`
+	// 	Period Period   `xml:"xbrli:period"`
+	// 	Scenario Scenario `xml:"xbrli:scenario"`
+	// }
+	// type XBRL2 struct {
+	// 	// XMLName xml.Name  `xml:"xbrli:xbrl"`
+	// 	// XMLName xml.Name  `xml:"xbrli"`
+	// 	XMLName xml.Name  `xml:"xbrl"`
+	// 	Contexts []Context `xml:"xbrli:context"`
+	// 	Units    []Unit    `xml:"xbrli:unit"`
+	// 	MoneyHeldInTrust MoneyHeldInTrust `xml:"jppfs_cor:MoneyHeldInTrustCAFND"`
+	// }
 
 	// XBRL構造体にXMLをパース
-	var xbrl2 XBRL2
-  // 元: []byte(xmlData), 後: []byte(body)
-	if err := xml.Unmarshal([]byte(body), &xbrl2); err != nil {
-		log.Fatal(err)
-	}
-
-	// // パース結果の表示
-	// fmt.Printf("SchemaRef Href: %s\n", xbrl2.SchemaRef.Href)
-	// for _, context := range xbrl2.Contexts {
-	// 	fmt.Printf("Context ID: %s\n", context.ID)
-	// 	fmt.Printf("Entity Identifier Scheme: %s\n", context.Entity.Identifier.Scheme)
-	// 	fmt.Printf("Entity Identifier Value: %s\n", context.Entity.Identifier.Value)
-	// 	fmt.Printf("Period Instant: %s\n", context.Period.Instant)
+	// var xbrl2 XBRL2
+	// 元: []byte(xmlData), 後: []byte(body)
+	// if err := xml.Unmarshal([]byte(body), &xbrl2); err != nil {
+	// 	log.Fatal(err)
 	// }
-  // 結果の表示
-	fmt.Printf("Money Held in Trust: %v\n", xbrl2.MoneyHeldInTrust)
 
-  // // 実際のXBRLからとる
-  // type RealXBRL struct {
+	// // 実際のXBRLからとる
+	// type RealXBRL struct {
 	// 	XMLName   xml.Name  `xml:"xbrl"`
 	// 	SchemaRef SchemaRef `xml:"schemaRef"`
 	// 	Contexts  []Context `xml:"context"`
