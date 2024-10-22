@@ -2,47 +2,369 @@ package main
 
 import (
 	"archive/zip"
+	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/PuerkitoBio/goquery"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/joho/godotenv"
 )
 
-func main() {
-	fmt.Println("Hello XBRL")
+// <link:schemaRef> 要素
+type SchemaRef struct {
+	Href string `xml:"xlink:href,attr"`
+	Type string `xml:"xlink:type,attr"`
+}
 
+// <xbrli:identifier> 要素
+type Identifier struct {
+	Scheme string `xml:"scheme,attr"`
+	Value  string `xml:",chardata"`
+}
+
+// <xbrli:entity> 要素
+type Entity struct {
+	Identifier Identifier `xml:"identifier"`
+}
+
+// <xbrli:period> 要素
+type Period struct {
+	Instant string `xml:"instant"`
+}
+
+// <xbrli:context> 要素
+type Context struct {
+	ID     string `xml:"id,attr"`
+	Entity Entity `xml:"entity"`
+	Period Period `xml:"period"`
+}
+
+// <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
+type MoneyHeldInTrust struct {
+	ContextRef string `xml:"contextRef,attr"`
+	Decimals   string `xml:"decimals,attr"`
+	UnitRef    string `xml:"unitRef,attr"`
+	Value      string `xml:",chardata"`
+}
+
+// 貸借対照表の行（Assets or Liabilities）
+type BalanceSheetItem struct {
+	Description string `xml:"td>p>span"`              // 項目名
+	AmountYear1 string `xml:"td:nth-child(2)>p>span"` // 特定28期の金額
+	AmountYear2 string `xml:"td:nth-child(3)>p>span"` // 特定29期の金額
+}
+
+// 貸借対照表の構造体
+type BalanceSheet struct {
+	Title string             `xml:"p>span"`   // 貸借対照表のタイトル
+	Unit  string             `xml:"caption"`  // 単位
+	Items []BalanceSheetItem `xml:"tbody>tr"` // 資産、負債の各項目
+}
+
+// XML全体のルート構造体
+type XBRL struct {
+	XMLName                                                                 xml.Name         `xml:"xbrl"`
+	SchemaRef                                                               SchemaRef        `xml:"schemaRef"`
+	Contexts                                                                []Context        `xml:"context"`
+	MoneyHeldInTrust                                                        MoneyHeldInTrust `xml:"MoneyHeldInTrustCAFND"`
+	BalanceSheetTextBlock                                                   BalanceSheet     `xml:"BalanceSheetTextBlock"`
+	NotesFinancialInformationOfInvestmentTrustManagementCompanyEtcTextBlock BalanceSheet     `xml:"NotesFinancialInformationOfInvestmentTrustManagementCompanyEtcTextBlock"`
+}
+
+// 項目ごとの値
+type TitleValue struct {
+	Previous int `json:"previous"`
+	Current  int `json:"current"`
+}
+
+type MyError interface {
+	Error() string
+}
+
+var EDINETAPIKey string
+
+func init() {
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error loading .env file err: ", err)
+		return
 	}
-	EDINETAPIKey := os.Getenv("EDINET_API_KEY")
-	fmt.Println("key : ", EDINETAPIKey)
+	EDINETAPIKey = os.Getenv("EDINET_API_KEY")
+	if EDINETAPIKey == "" {
+		fmt.Println("API key not found")
+		return
+	}
+}
 
-	// 三井住友DSアセットマネジメント株式会社 のデータを取得
-	// まずは書類番号 (/documents/書類番号) を指定
-	// S100SNA8
-	docID := "S100SNA8"
-	// EDINETコード
-	EDINETCode := "E08957"
+func main() {
+	reports, err := GetReports()
+	fmt.Println("len(reports): ", len(reports))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	for _, report := range reports {
+		EDINETCode := report.EdinetCode
+		companyName := report.FilerName
+		docID := report.DocId
+		var periodStart string
+		var periodEnd string
+		if report.PeriodStart == "" || report.PeriodEnd == "" {
+			// 正規表現を用いて抽出
+			periodPattern := `(\d{4}/\d{2}/\d{2})－(\d{4}/\d{2}/\d{2})`
+			// 正規表現をコンパイル
+			re := regexp.MustCompile(periodPattern)
+			// 正規表現でマッチした部分を取得
+			match := re.FindString(report.DocDescription)
+
+			if match != "" {
+				splitPeriod := strings.Split(match, "－")
+				if len(splitPeriod) >= 2 {
+					periodStart = strings.ReplaceAll(splitPeriod[0], "/", "-")
+					periodEnd = strings.ReplaceAll(splitPeriod[1], "/", "-")
+				}
+			}
+		}
+
+		if report.PeriodStart != "" {
+			periodStart = report.PeriodStart
+		}
+
+		if report.PeriodEnd != "" {
+			periodEnd = report.PeriodEnd
+		}
+		// fmt.Println("資料名 ⭐️: ", report.DocDescription)
+		// fmt.Println("コード: ", EDINETCode)
+		// fmt.Println("企業名: ", companyName)
+		// fmt.Println("docID: ", docID)
+		// fmt.Println("periodStart: ", periodStart)
+		// fmt.Println("periodEnd: ", periodEnd)
+		RegisterReport(EDINETCode, docID, companyName, periodStart, periodEnd)
+	}
+
+	//////// テスト用 ///////////
+	// // フィンテック　グローバル株式会社
+	// companyName := "フィンテック　グローバル株式会社"
+	// EDINETCode := "S100PX6D"
+	// docID := "S100PX6D"
+
+	// // くら寿司株式会社
+	// companyName := "くら寿司株式会社"
+	// EDINETCode := "E03375"
+	// docID := "S100Q0FC"
+
+	// // 株式会社スマサポ
+	// companyName := "株式会社スマサポ"
+	// EDINETCode := "E38200"
+	// docID := "S100PW3K"
+
+	// RegisterReport(EDINETCode, docID, companyName, "dummy-start", "dummy-end")
+	////////////////////////////
+}
+
+func unzip(EDINETCode, source, destination string) (string, error) {
+	// ZIPファイルをオープン
+	r, err := zip.OpenReader(source)
+	if err != nil {
+		return "", fmt.Errorf("failed to open zip file: %v", err)
+	}
+	defer r.Close()
+
+	var XBRLFilepath string
+
+	// ZIP内の各ファイルを処理
+	for _, f := range r.File {
+		extension := filepath.Ext(f.Name)
+		underPublic := strings.Contains(f.Name, "PublicDoc")
+
+		// ファイル名に EDINETコードが含まれる かつ 拡張子が .xbrl の場合のみ処理する
+		if underPublic && extension == ".xbrl" {
+			// ファイル名を作成
+			fpath := filepath.Join(destination, f.Name)
+
+			// ディレクトリの場合は作成
+			if f.FileInfo().IsDir() {
+				os.MkdirAll(fpath, os.ModePerm)
+				continue
+			}
+
+			// ファイルの場合はファイルを作成し、内容をコピー
+			if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
+				return "", err
+			}
+
+			outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+			if err != nil {
+				return "", err
+			}
+
+			rc, err := f.Open()
+			if err != nil {
+				return "", err
+			}
+
+			_, err = io.Copy(outFile, rc)
+
+			// リソースを閉じる
+			outFile.Close()
+			rc.Close()
+
+			if err != nil {
+				return "", err
+			}
+
+			XBRLFilepath = f.Name
+
+			// TODO: ディレクトリを削除する
+		}
+	}
+	return XBRLFilepath, nil
+}
+
+type Param struct {
+	Date string `json:"date"`
+	Type string `json:"type"`
+}
+
+type ResultCount struct {
+	Count int `json:"count"`
+}
+
+type Meta struct {
+	Title           string      `json:"title"`
+	Parameter       Param       `json:"parameter"`
+	ResultSet       ResultCount `json:"resultset"`
+	ProcessDateTime string      `json:"processDateTime"`
+	Status          string      `json:"status"`
+	Message         string      `json:"message"`
+}
+
+type Result struct {
+	SeqNumber            int    `json:"seqNumber"`
+	DocId                string `json:"docId"`
+	EdinetCode           string `json:"edinetCode"`
+	SecCode              string `json:"secCode"`
+	JCN                  string `json:"JCN"`
+	FilerName            string `json:"filerName"` // 企業名
+	FundCode             string `json:"fundCode"`
+	OrdinanceCode        string `json:"ordinanceCode"`
+	FormCode             string `json:"formCode"`
+	DocTypeCode          string `json:"docTypeCode"`
+	PeriodStart          string `json:"periodStart"`
+	PeriodEnd            string `json:"periodEnd"`
+	SubmitDateTime       string `json:"submitDateTime"` // Date にしたほうがいいかも
+	DocDescription       string `json:"docDescription"` // 資料名
+	IssuerEdinetCode     string `json:"issuerEdinetCode"`
+	SubjectEdinetCode    string `json:"subjectEdinetCode"`
+	SubsidiaryEdinetCode string `json:"subsidiaryEdinetCode"`
+	CurrentReportReason  string `json:"currentReportReason"`
+	ParentDocID          string `json:"parentDocID"`
+	OpeDateTime          string `json:"opeDateTime"` // Date かも
+	WithdrawalStatus     string `json:"withdrawalStatus"`
+	DocInfoEditStatus    string `json:"docInfoEditStatus"`
+	DisclosureStatus     string `json:"disclosureStatus"`
+	XbrlFlag             string `json:"xbrlFlag"`
+	PdfFlag              string `json:"pdfFlag"`
+	AttachDocFlag        string `json:"attachDocFlag"`
+	CsvFlag              string `json:"csvFlag"`
+	LegalStatus          string `json:"legalStatus"`
+}
+
+type Report struct {
+	Metadata Meta     `json:"metadata"`
+	Results  []Result `json:"results"`
+}
+
+/*
+EDINET 書類一覧取得 API を使用し有価証券報告書または訂正有価証券報告書のデータを取得する
+*/
+func GetReports() ([]Result, error) {
+	loc, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		fmt.Println("load location error")
+		return nil, err
+	}
+
+	var results []Result
+	date := time.Date(2023, time.January, 1, 1, 0, 0, 0, loc)
+	for i := 0; i < 20; i++ {
+		var statement Report
+
+		dateStr := date.Format("2006-01-02")
+		url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents.json?date=%s&&Subscription-Key=%s&type=2", dateStr, EDINETAPIKey)
+		resp, err := http.Get(url)
+		if err != nil {
+			fmt.Println("http get error : ", err)
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		err = json.Unmarshal(body, &statement)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, s := range statement.Results {
+			// 有価証券報告書 (Securities Report)
+			isSecReport := s.FormCode == "030000" && s.DocTypeCode == "120"
+			// 訂正有価証券報告書 (Amended Securities Report)
+			isAmendReport := s.FormCode == "030001" && s.DocTypeCode == "130"
+
+			if isSecReport || isAmendReport {
+				results = append(results, s)
+			}
+		}
+		date = date.AddDate(0, 0, 1)
+	}
+	return results, nil
+}
+
+/*
+B/S, P/L それぞれをS3に保存する
+*/
+type Summary struct {
+	CompanyName               string     `json:"company_name"`
+	PeriodStart               string     `json:"period_start"`
+	PeriodEnd                 string     `json:"period_end"`
+	TangibleAssets            TitleValue `json:"tangible_assets"`
+	IntangibleAssets          TitleValue `json:"intangible_assets"`
+	InvestmentsAndOtherAssets TitleValue `json:"investments_and_other_assets"`
+	CurrentLiabilities        TitleValue `json:"current_liabilities"`
+	FixedLiabilities          TitleValue `json:"fixed_liabilities"`
+	NetAssets                 TitleValue `json:"net_assets"`
+}
+
+func RegisterReport(EDINETCode string, docID string, companyName string, periodStart string, periodEnd string) {
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
 	url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents/%s?type=1&Subscription-Key=%s", docID, EDINETAPIKey)
-	resp, err := http.Get(url)
+	resp, err := client.Get(url)
 	if err != nil {
 		fmt.Println("http get error : ", err)
 	}
-	fmt.Println("content-type : ", resp.Header.Get("Content-Type"))
 	defer resp.Body.Close()
 
-	// body, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	fmt.Println("io.ReadAll error : ", err)
-	// }
-	// fmt.Println("body : ", body)
 	dirPath := "XBRL"
 	zipFileName := fmt.Sprintf("%s.zip", docID)
 	path := filepath.Join(dirPath, zipFileName)
@@ -67,8 +389,6 @@ func main() {
 		return
 	}
 
-	fmt.Println("File downloaded and saved to", path)
-
 	// ZIPファイルを解凍
 	unzipDst := filepath.Join(dirPath, docID)
 	XBRLFilepath, err := unzip(EDINETCode, path, unzipDst)
@@ -78,12 +398,8 @@ func main() {
 	}
 	fmt.Println(XBRLFilepath)
 
-	// ZIPファイルを削除
-	// os.Remove(path)
-
 	// XBRLファイルの取得
-	// parentPath := filepath.Join("XBRL", docID, XBRLFilepath)
-	parentPath := filepath.Join("XBRL", docID, "XBRL", "PublicDoc", "jpsps070000-asr-001_G07493-000_2023-11-06_01_2024-02-01.xml")
+	parentPath := filepath.Join("XBRL", docID, XBRLFilepath)
 	XBRLFile, err := os.Open(parentPath)
 	if err != nil {
 		fmt.Println("XBRL open err: ", err)
@@ -94,311 +410,193 @@ func main() {
 		fmt.Println("XBRL read err: ", err)
 		return
 	}
-	// // Chat GPT (ver.1) /////////
-	// <link:schemaRef> 要素
-	type SchemaRef struct {
-		Href string `xml:"xlink:href,attr"`
-		Type string `xml:"xlink:type,attr"`
-	}
 
-	// <xbrli:identifier> 要素
-	type Identifier struct {
-		Scheme string `xml:"scheme,attr"`
-		Value  string `xml:",chardata"`
-	}
-
-	// <xbrli:entity> 要素
-	type Entity struct {
-		Identifier Identifier `xml:"identifier"`
-	}
-
-	// <xbrli:period> 要素
-	type Period struct {
-		Instant string `xml:"instant"`
-	}
-
-	// <xbrli:context> 要素
-	type Context struct {
-		ID     string `xml:"id,attr"`
-		Entity Entity `xml:"entity"`
-		Period Period `xml:"period"`
-	}
-
-	// <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
-	type MoneyHeldInTrust struct {
-		ContextRef string `xml:"contextRef,attr"`
-		Decimals   string `xml:"decimals,attr"`
-		UnitRef    string `xml:"unitRef,attr"`
-		Value      string `xml:",chardata"`
-	}
-
-	// XML全体のルート構造体
-	type XBRL struct {
-		XMLName          xml.Name         `xml:"xbrl"`
-		SchemaRef        SchemaRef        `xml:"schemaRef"`
-		Contexts         []Context        `xml:"context"`
-		MoneyHeldInTrust MoneyHeldInTrust `xml:"MoneyHeldInTrustCAFND"`
-	}
-	/////////////////////////////////
-
-	// fmt.Println("string(body): ", string(body))
 	var xbrl XBRL
 	err = xml.Unmarshal(body, &xbrl)
 	if err != nil {
 		fmt.Println("XBRL Unmarshal err: ", err)
 		return
 	}
-	fmt.Println("Unmarshal 後: ", xbrl)
 
-	// パース結果の表示
-	fmt.Printf("SchemaRef Href: %s\n", xbrl.SchemaRef.Href)
-	for _, context := range xbrl.Contexts {
-		fmt.Printf("Context ID: %s\n", context.ID)
-		fmt.Printf("Entity Identifier Scheme: %s\n", context.Entity.Identifier.Scheme)
-		fmt.Printf("Entity Identifier Value: %s\n", context.Entity.Identifier.Value)
-		fmt.Printf("Period Instant: %s\n", context.Period.Instant)
-	}
-	// 結果の表示
-	fmt.Printf("Money Held in Trust: %v\n", xbrl.MoneyHeldInTrust)
+	// 【連結貸借対照表】
+	consolidatedPattern := `(?s)<jpcrp_cor:ConsolidatedBalanceSheetTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:ConsolidatedBalanceSheetTextBlock>`
+	consolidatedRe := regexp.MustCompile(consolidatedPattern)
+	consolidatedMatches := consolidatedRe.FindString(string(body))
 
-	// 手動で作成
-	text := `
-  <?xml version="1.0" encoding="UTF-8"?>
-  <xbrli:xbrl xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:jpdei_cor="http://disclosure.edinet-fsa.go.jp/taxonomy/jpdei/2013-08-31/jpdei_cor" xmlns:jppfs_cor="http://disclosure.edinet-fsa.go.jp/taxonomy/jppfs/2022-11-01/jppfs_cor" xmlns:jpsps_cor="http://disclosure.edinet-fsa.go.jp/taxonomy/jpsps/2022-11-01/jpsps_cor" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <link:schemaRef xlink:href="jpsps070000-asr-001_G07493-000_2023-11-06_01_2024-02-01.xsd" xlink:type="simple"/>
-    <xbrli:context id="FilingDateInstant">
-              <xbrli:entity>
-                <xbrli:identifier scheme="http://disclosure.edinet-fsa.go.jp">G07493-000</xbrli:identifier>
-              </xbrli:entity>
-              <xbrli:period>
-                <xbrli:instant>2024-02-01</xbrli:instant>
-              </xbrli:period>
-            </xbrli:context>
-    </xbrli:xbrl>
-		<jppfs_cor:MoneyHeldInTrustCAFND contextRef="Prior1YearInstant_NonConsolidatedMember" decimals="0" unitRef="JPY">8468659</jppfs_cor:MoneyHeldInTrustCAFND>
-  `
-	type Sample struct {
-		Xml string `xml:"xbrli:xbrl"`
+	// 【貸借対照表】
+	soloPattern := `(?s)<jpcrp_cor:BalanceSheetTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:BalanceSheetTextBlock>`
+	soloRe := regexp.MustCompile(soloPattern)
+	soloMatches := soloRe.FindString(string(body))
+
+	// エスケープ文字をデコード
+	var unescaped string
+	if consolidatedMatches == "" && soloMatches == "" {
+		return
+	} else if consolidatedMatches != "" {
+		unescaped = html.UnescapeString(consolidatedMatches)
+	} else if soloMatches != "" {
+		unescaped = html.UnescapeString(soloMatches)
 	}
-	var sample Sample
-	if err := xml.Unmarshal([]byte(text), &sample); err != nil {
+
+	// デコードしきれていない文字は replace
+	// 特定のエンティティをさらに手動でデコード
+	unescaped = strings.ReplaceAll(unescaped, "&apos;", "'")
+
+	// html ファイルとして書き出す
+	bsHTMLName := fmt.Sprintf("%s-bs.html", docID)
+	// bsHTMLName := "S100TCJI-bs2.html" // インフォマート
+	bsHTML, err := os.Create(bsHTMLName)
+	if err != nil {
+		fmt.Println("BS HTML create err: ", err)
+		return
+	}
+	defer bsHTML.Close()
+
+	_, err = bsHTML.WriteString(unescaped)
+	if err != nil {
+		fmt.Println("BS HTML write err: ", err)
+		return
+	}
+
+	bsHTMLFile, err := os.Open(bsHTMLName)
+	if err != nil {
+		fmt.Println("BS HTML open error: ", err)
+		return
+	}
+	defer bsHTMLFile.Close()
+
+	// goqueryでHTMLをパース
+	doc, err := goquery.NewDocumentFromReader(bsHTMLFile)
+	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("sample: ", sample)
 
-	
+	var summary Summary
 
-	// xmlData := `
-	// <?xml version="1.0" encoding="UTF-8"?>
-	// <xbrli:xbrl xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:jpdei_cor="http://disclosure.edinet-fsa.go.jp/taxonomy/jpdei/2013-08-31/jpdei_cor" xmlns:jppfs_cor="http://disclosure.edinet-fsa.go.jp/taxonomy/jppfs/2022-11-01/jppfs_cor" xmlns:jpsps_cor="http://disclosure.edinet-fsa.go.jp/taxonomy/jpsps/2022-11-01/jpsps_cor" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-	//   <link:schemaRef xlink:href="jpsps070000-asr-001_G07493-000_2023-11-06_01_2024-02-01.xsd" xlink:type="simple"/>
-	//   <xbrli:context id="FilingDateInstant">
-	// 	<xbrli:entity>
-	// 	  <xbrli:identifier scheme="http://disclosure.edinet-fsa.go.jp">G07493-000</xbrli:identifier>
-	// 	</xbrli:entity>
-	// 	<xbrli:period>
-	// 	  <xbrli:instant>2024-02-01</xbrli:instant>
-	// 	</xbrli:period>
-	//   </xbrli:context>
-	// </xbrli:xbrl>
-	// `
+	summary.CompanyName = companyName
+	summary.PeriodStart = periodStart
+	summary.PeriodEnd = periodEnd
 
-	// Chat GPT (ver.2) /////////////
-	//   // XMLの名前空間とタグに対応する構造体を定義
-	// // <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
-	// type MoneyHeldInTrust struct {
-	// 	ContextRef string `xml:"contextRef,attr"`
-	// 	Decimals   string `xml:"decimals,attr"`
-	// 	UnitRef    string `xml:"unitRef,attr"`
-	// 	Value      string `xml:",chardata"`
-	// }
+	UpdateSummary(doc, &summary)
+	fmt.Println("summary ⭐️: ", summary)
 
-	// // <xbrli:unit> タグをパースする構造体
-	// type Unit struct {
-	// 	ID      string   `xml:"id,attr"`
-	// 	Measure string   `xml:"xbrli:measure"`
-	// }
+	isSummaryValid := ValidateSummary(summary)
+	if isSummaryValid {
+		fmt.Println("有効な summary です❗️")
+		jsonName := fmt.Sprintf("%s-%s-from-%s-to-%s.json", EDINETCode, docID, periodStart, periodEnd)
+		jsonPath := fmt.Sprintf("json/%s", jsonName)
+		jsonFile, err := os.Create(jsonPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer jsonFile.Close()
 
-	// // <xbrldi:explicitMember> タグの構造体
-	// type ExplicitMember struct {
-	// 	Dimension string `xml:"dimension,attr"`
-	// 	Value     string `xml:",chardata"`
-	// }
+		jsonBody, err := json.MarshalIndent(summary, "", "  ")
+		fmt.Println("json data: ", string(jsonBody))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		_, err = jsonFile.Write(jsonBody)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 
-	// // <xbrli:scenario> タグの構造体
-	// type Scenario struct {
-	// 	ExplicitMember ExplicitMember `xml:"xbrldi:explicitMember"`
-	// }
-
-	//   // <xbrli:period> タグの構造体
-	// type Period struct {
-	// 	StartDate string `xml:"xbrli:startDate,omitempty"`
-	// 	EndDate   string `xml:"xbrli:endDate,omitempty"`
-	// 	Instant   string `xml:"xbrli:instant,omitempty"`
-	// }
-
-	//   // <xbrli:identifier> タグの構造体
-	// type Identifier struct {
-	// 	Scheme string `xml:"scheme,attr"`
-	// 	Value  string `xml:",chardata"`
-	// }
-	//   // <xbrli:entity> タグの構造体
-	// type Entity struct {
-	// 	Identifier Identifier `xml:"xbrli:identifier"`
-	// }
-	//   // <xbrli:context> タグをパースする構造体
-	// type Context struct {
-	// 	ID     string   `xml:"id,attr"`
-	// 	Entity Entity   `xml:"xbrli:entity"`
-	// 	Period Period   `xml:"xbrli:period"`
-	// 	Scenario Scenario `xml:"xbrli:scenario"`
-	// }
-	// type XBRL2 struct {
-	// 	// XMLName xml.Name  `xml:"xbrli:xbrl"`
-	// 	// XMLName xml.Name  `xml:"xbrli"`
-	// 	XMLName xml.Name  `xml:"xbrl"`
-	// 	Contexts []Context `xml:"xbrli:context"`
-	// 	Units    []Unit    `xml:"xbrli:unit"`
-	// 	MoneyHeldInTrust MoneyHeldInTrust `xml:"jppfs_cor:MoneyHeldInTrustCAFND"`
-	// }
-
-	// XBRL構造体にXMLをパース
-	// var xbrl2 XBRL2
-	// 元: []byte(xmlData), 後: []byte(body)
-	// if err := xml.Unmarshal([]byte(body), &xbrl2); err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// // 実際のXBRLからとる
-	// type RealXBRL struct {
-	// 	XMLName   xml.Name  `xml:"xbrl"`
-	// 	SchemaRef SchemaRef `xml:"schemaRef"`
-	// 	Contexts  []Context `xml:"context"`
-	// }
-
-	// sample
-	type Animal string
-	type AnimalsType struct {
-		Animal string `xml:"animal"`
+		// S3 に json ファイルを送信
+		// Key は aws configure で設定する
+		region := os.Getenv("REGION")
+		sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		s3Client := s3.NewFromConfig(sdkConfig)
+		bucketName := os.Getenv("BUCKET_NAME")
+		jsonFileOpen, err := os.Open(jsonPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+			Bucket:      aws.String(bucketName),
+			Key:         aws.String(jsonName),
+			Body:        jsonFileOpen,
+			ContentType: aws.String("application/json"),
+		})
+		if err != nil {
+			fmt.Println(fmt.Sprintf("Couldn't upload file to %v:%v. Here's why: %v\n", jsonName, bucketName, jsonName, err))
+			return
+		}
+	} else {
+		fmt.Println("無効な summary です❌")
 	}
-	blob := `
-	<animals>
-		<animal>gopher</animal>
-		<animal>armadillo</animal>
-		<animal>zebra</animal>
-		<animal>unknown</animal>
-		<animal>gopher</animal>
-		<animal>bee</animal>
-		<animal>gopher</animal>
-		<animal>zebra</animal>
-	</animals>`
-	var zoo struct {
-		Animals []Animal `xml:"animal"`
-	}
-	if err := xml.Unmarshal([]byte(blob), &zoo); err != nil {
-		log.Fatal(err)
-	}
-	// fmt.Println("sample Unmarshal 後: ", zoo.Animals)
-	// census := make(map[Animal]int)
-	// for _, animal := range zoo.Animals {
-	// 	census[animal] += 1
-	// }
-
-	// fmt.Printf("Zoo Census:\n* Gophers: %d\n* Zebras:  %d\n* Unknown: %d\n",
-	// 	census[Gopher], census[Zebra], census[Unknown])
-
 }
 
-func unzip(EDINETCode, source, destination string) (string, error) {
-	// ZIPファイルをオープン
-	r, err := zip.OpenReader(source)
-	if err != nil {
-		return "", fmt.Errorf("failed to open zip file: %v", err)
-	}
-	defer r.Close()
-
-	var XBRLFilepath string
-
-	// ZIP内の各ファイルを処理
-	for _, f := range r.File {
-		// fmt.Println("f.Name: ", f.Name)
-		// ファイル名に EDINETコードが含まれる かつ 拡張子が .xbrl の場合のみ処理する
-		extension := filepath.Ext(f.Name)
-		// fmt.Println("拡張子 : ", extension)
-		underPublic := strings.Contains(f.Name, "PublicDoc")
-		// isFiscalStatements := strings.Contains(f.Name, "0105020")
-		// hasEDINETCode := strings.Contains(f.Name, EDINETCode)
-		// fmt.Println("ファイル名に EDINETCode が含まれていますか❓ : ", hasEDINETCode)
-
-		if underPublic && extension == ".xbrl" {
-			fmt.Println("ファイル名 : ", f.Name)
-
-			// ファイル名を作成
-			fpath := filepath.Join(destination, f.Name)
-
-			// ディレクトリの場合は作成
-			if f.FileInfo().IsDir() {
-				os.MkdirAll(fpath, os.ModePerm)
-				continue
+func UpdateSummary(doc *goquery.Document, summary *Summary) {
+	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
+		tdText := s.Find("td").Text()
+		tdText = strings.TrimSpace(tdText)
+		splitTdTexts := strings.Split(tdText, "\n")
+		var titleTexts []string
+		for _, t := range splitTdTexts {
+			if t != "" {
+				titleTexts = append(titleTexts, t)
 			}
-
-			// ファイルの場合はファイルを作成し、内容をコピー
-			if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-				return "", err
-			}
-
-			// fmt.Println("fpath : ", fpath)
-			outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-			if err != nil {
-				return "", err
-			}
-
-			rc, err := f.Open()
-			if err != nil {
-				return "", err
-			}
-
-			// type XBRL struct {
-			//   // BalanceSheetTextBlock string `xml:"jpsps_cor:BalanceSheetTextBlock"`
-			//   BalanceSheetTextBlock string `xml:"xbrli:xbrl"`
-			// }
-			// // outFile: XBRLファイル
-			// // TODO: XBRL から jpsps_cor:BalanceSheetTextBlock タグを取得する
-			// body, err := io.ReadAll(rc)
-			// if err != nil {
-			//   fmt.Println("io.ReadAll err: ", err)
-			// }
-			// // fmt.Println("string(body): ", string(body))
-			// var xbrl XBRL
-			// err = xml.Unmarshal(body, &xbrl)
-			// if err != nil {
-			//   fmt.Println("Unmarshal err: ", err)
-			// }
-			// fmt.Println("Unmarshal後: ", xbrl)
-
-			// var xbrl XBRL
-			// decoder := xml.NewDecoder(rc)
-			// err = decoder.Decode(&xbrl)
-			// if err != nil {
-			//   fmt.Printf("XMLのデコード中にエラーが発生しました: %v\n", err)
-			// }
-			// // <jpsps_cor:BalanceSheetTextBlock>タグの内容を表示
-			// fmt.Println("デコード後: ", xbrl)
-			// fmt.Println("BalanceSheetTextBlockの内容:")
-			// fmt.Println(xbrl.BalanceSheetTextBlock)
-
-			_, err = io.Copy(outFile, rc)
-
-			// リソースを閉じる
-			outFile.Close()
-			rc.Close()
-
-			if err != nil {
-				return "", err
-			}
-
-			XBRLFilepath = f.Name
 		}
+		if len(titleTexts) >= 3 {
+			titleName := titleTexts[0]
+			previous := titleTexts[1]
+			previousStr := strings.ReplaceAll(previous, ",", "")
+			previousInt, prevErr := strconv.Atoi(previousStr)
+			current := titleTexts[2]
+			currentStr := strings.ReplaceAll(current, ",", "")
+			currentInt, currErr := strconv.Atoi(currentStr)
+
+			if prevErr == nil && currErr == nil {
+				switch titleName {
+				case "有形固定資産合計":
+					summary.TangibleAssets.Previous = previousInt
+					summary.TangibleAssets.Current = currentInt
+				case "無形固定資産合計":
+					summary.IntangibleAssets.Previous = previousInt
+					summary.IntangibleAssets.Current = currentInt
+				case "投資その他の資産合計":
+					summary.InvestmentsAndOtherAssets.Previous = previousInt
+					summary.InvestmentsAndOtherAssets.Current = currentInt
+				case "流動負債合計":
+					summary.CurrentLiabilities.Previous = previousInt
+					summary.CurrentLiabilities.Current = currentInt
+				case "固定負債合計":
+					summary.FixedLiabilities.Previous = previousInt
+					summary.FixedLiabilities.Current = currentInt
+				case "純資産合計":
+					summary.NetAssets.Previous = previousInt
+					summary.NetAssets.Current = currentInt
+				}
+			}
+		}
+	})
+}
+
+func ValidateSummary(summary Summary) bool {
+	if summary.CompanyName != "" &&
+		summary.PeriodStart != "" &&
+		summary.PeriodEnd != "" &&
+		summary.TangibleAssets.Previous != 0 &&
+		summary.TangibleAssets.Current != 0 &&
+		summary.IntangibleAssets.Previous != 0 &&
+		summary.IntangibleAssets.Current != 0 &&
+		summary.InvestmentsAndOtherAssets.Previous != 0 &&
+		summary.InvestmentsAndOtherAssets.Current != 0 &&
+		summary.CurrentLiabilities.Previous != 0 &&
+		summary.CurrentLiabilities.Current != 0 &&
+		summary.FixedLiabilities.Previous != 0 &&
+		summary.FixedLiabilities.Current != 0 &&
+		summary.NetAssets.Previous != 0 &&
+		summary.NetAssets.Current != 0 {
+		return true
 	}
-	return XBRLFilepath, nil
+	return false
 }
