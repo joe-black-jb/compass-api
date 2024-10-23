@@ -155,29 +155,13 @@ func main() {
 		// fmt.Println("periodStart: ", periodStart)
 		// fmt.Println("periodEnd: ", periodEnd)
 		RegisterReport(EDINETCode, docID, companyName, periodStart, periodEnd)
+    // RegisterCompany(EDINETCode)
 	}
 
-	//////// テスト用 ///////////
-	// // フィンテック　グローバル株式会社
-	// companyName := "フィンテック　グローバル株式会社"
-	// EDINETCode := "S100PX6D"
-	// docID := "S100PX6D"
-
-	// // くら寿司株式会社
-	// companyName := "くら寿司株式会社"
-	// EDINETCode := "E03375"
-	// docID := "S100Q0FC"
-
-	// // 株式会社スマサポ
-	// companyName := "株式会社スマサポ"
-	// EDINETCode := "E38200"
-	// docID := "S100PW3K"
-
-	// RegisterReport(EDINETCode, docID, companyName, "dummy-start", "dummy-end")
-	////////////////////////////
+	fmt.Println("All processes done ⭐️")
 }
 
-func unzip(EDINETCode, source, destination string) (string, error) {
+func unzip(source, destination string) (string, error) {
 	// ZIPファイルをオープン
 	r, err := zip.OpenReader(source)
 	if err != nil {
@@ -340,21 +324,37 @@ func GetReports() ([]Result, error) {
 }
 
 /*
-B/S, P/L それぞれをS3に保存する
+B/S の値のうち比例縮尺図に使うもの
 */
 type Summary struct {
 	CompanyName               string     `json:"company_name"`
 	PeriodStart               string     `json:"period_start"`
 	PeriodEnd                 string     `json:"period_end"`
-	TangibleAssets            TitleValue `json:"tangible_assets"`
-	IntangibleAssets          TitleValue `json:"intangible_assets"`
-	InvestmentsAndOtherAssets TitleValue `json:"investments_and_other_assets"`
-	CurrentLiabilities        TitleValue `json:"current_liabilities"`
-	FixedLiabilities          TitleValue `json:"fixed_liabilities"`
-	NetAssets                 TitleValue `json:"net_assets"`
+	UnitString                string     `json:"unit_string"`                  // 単位
+	TangibleAssets            TitleValue `json:"tangible_assets"`              // 有形固定資産
+	IntangibleAssets          TitleValue `json:"intangible_assets"`            // 無形固定資産
+	InvestmentsAndOtherAssets TitleValue `json:"investments_and_other_assets"` // 投資その他の資産
+	CurrentLiabilities        TitleValue `json:"current_liabilities"`          // 流動負債
+	FixedLiabilities          TitleValue `json:"fixed_liabilities"`            // 固定負債
+	NetAssets                 TitleValue `json:"net_assets"`                   // 純資産
+}
+
+type PLSummary struct {
+	CompanyName     string     `json:"company_name"`
+	PeriodStart     string     `json:"period_start"`
+	PeriodEnd       string     `json:"period_end"`
+	UnitString      string     `json:"unit_string"`
+	CostOfGoodsSold TitleValue `json:"cost_of_goods_sold"` // 売上原価
+	SGAndA          TitleValue `json:"sg_and_a"`           // 販売費及び一般管理費
+	Sales           TitleValue `json:"sales"`              // 売上高
+	OperatingProfit TitleValue `json:"operating_profit"`   // 営業利益
+	// OperatingLoss             TitleValue `json:"operating_loss"` // 営業損失
 }
 
 func RegisterReport(EDINETCode string, docID string, companyName string, periodStart string, periodEnd string) {
+	BSFileNamePattern := fmt.Sprintf("%s-%s-BS-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
+	PLFileNamePattern := fmt.Sprintf("%s-%s-PL-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
@@ -391,12 +391,11 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 
 	// ZIPファイルを解凍
 	unzipDst := filepath.Join(dirPath, docID)
-	XBRLFilepath, err := unzip(EDINETCode, path, unzipDst)
+	XBRLFilepath, err := unzip(path, unzipDst)
 	if err != nil {
 		fmt.Println("Error unzipping file:", err)
 		return
 	}
-	fmt.Println(XBRLFilepath)
 
 	// XBRLファイルの取得
 	parentPath := filepath.Join("XBRL", docID, XBRLFilepath)
@@ -419,46 +418,84 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 	}
 
 	// 【連結貸借対照表】
-	consolidatedPattern := `(?s)<jpcrp_cor:ConsolidatedBalanceSheetTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:ConsolidatedBalanceSheetTextBlock>`
-	consolidatedRe := regexp.MustCompile(consolidatedPattern)
-	consolidatedMatches := consolidatedRe.FindString(string(body))
+	consolidatedBSPattern := `(?s)<jpcrp_cor:ConsolidatedBalanceSheetTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:ConsolidatedBalanceSheetTextBlock>`
+	consolidatedBSRe := regexp.MustCompile(consolidatedBSPattern)
+	consolidatedBSMatches := consolidatedBSRe.FindString(string(body))
 
 	// 【貸借対照表】
-	soloPattern := `(?s)<jpcrp_cor:BalanceSheetTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:BalanceSheetTextBlock>`
-	soloRe := regexp.MustCompile(soloPattern)
-	soloMatches := soloRe.FindString(string(body))
+	soloBSPattern := `(?s)<jpcrp_cor:BalanceSheetTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:BalanceSheetTextBlock>`
+	soloBSRe := regexp.MustCompile(soloBSPattern)
+	soloBSMatches := soloBSRe.FindString(string(body))
+
+	// 【連結損益計算書】
+	consolidatedPLPattern := `(?s)<jpcrp_cor:ConsolidatedStatementOfIncomeTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:ConsolidatedStatementOfIncomeTextBlock>`
+	consolidatedPLRe := regexp.MustCompile(consolidatedPLPattern)
+	consolidatedPLMatches := consolidatedPLRe.FindString(string(body))
+
+	// 【損益計算書】
+	soloPLPattern := `(?s)<jpcrp_cor:StatementOfIncomeTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:StatementOfIncomeTextBlock>`
+	soloPLRe := regexp.MustCompile(soloPLPattern)
+	soloPLMatches := soloPLRe.FindString(string(body))
 
 	// エスケープ文字をデコード
-	var unescaped string
-	if consolidatedMatches == "" && soloMatches == "" {
+	// 貸借対照表データの整形
+	var unescapedBS string
+	if consolidatedBSMatches == "" && soloBSMatches == "" {
 		return
-	} else if consolidatedMatches != "" {
-		unescaped = html.UnescapeString(consolidatedMatches)
-	} else if soloMatches != "" {
-		unescaped = html.UnescapeString(soloMatches)
+	} else if consolidatedBSMatches != "" {
+		unescapedBS = html.UnescapeString(consolidatedBSMatches)
+	} else if soloBSMatches != "" {
+		unescapedBS = html.UnescapeString(soloBSMatches)
+	}
+
+	// 損益計算書データの整形
+	var unescapedPL string
+	if consolidatedPLMatches == "" && soloPLMatches == "" {
+		return
+	} else if consolidatedPLMatches != "" {
+		unescapedPL = html.UnescapeString(consolidatedPLMatches)
+	} else if soloPLMatches != "" {
+		unescapedPL = html.UnescapeString(soloPLMatches)
 	}
 
 	// デコードしきれていない文字は replace
 	// 特定のエンティティをさらに手動でデコード
-	unescaped = strings.ReplaceAll(unescaped, "&apos;", "'")
+	unescapedBS = strings.ReplaceAll(unescapedBS, "&apos;", "'")
+	unescapedPL = strings.ReplaceAll(unescapedPL, "&apos;", "'")
 
 	// html ファイルとして書き出す
-	bsHTMLName := fmt.Sprintf("%s-bs.html", docID)
-	// bsHTMLName := "S100TCJI-bs2.html" // インフォマート
-	bsHTML, err := os.Create(bsHTMLName)
+	HTMLDirName := "HTML"
+	bsHTMLFileName := fmt.Sprintf("%s.html", BSFileNamePattern)
+	bsHTMLFilePath := filepath.Join(HTMLDirName, bsHTMLFileName)
+
+	plHTMLFileName := fmt.Sprintf("%s.html", PLFileNamePattern)
+	plHTMLFilePath := filepath.Join(HTMLDirName, plHTMLFileName)
+
+	// HTMLディレクトリが存在するか確認
+	if _, err := os.Stat(HTMLDirName); os.IsNotExist(err) {
+		// ディレクトリが存在しない場合は作成
+		err := os.Mkdir(HTMLDirName, 0755) // 0755はディレクトリのパーミッション
+		if err != nil {
+			fmt.Println("Error creating directory:", err)
+			return
+		}
+	}
+
+	// 貸借対照表
+	bsHTML, err := os.Create(bsHTMLFilePath)
 	if err != nil {
 		fmt.Println("BS HTML create err: ", err)
 		return
 	}
 	defer bsHTML.Close()
 
-	_, err = bsHTML.WriteString(unescaped)
+	_, err = bsHTML.WriteString(unescapedBS)
 	if err != nil {
 		fmt.Println("BS HTML write err: ", err)
 		return
 	}
 
-	bsHTMLFile, err := os.Open(bsHTMLName)
+	bsHTMLFile, err := os.Open(bsHTMLFilePath)
 	if err != nil {
 		fmt.Println("BS HTML open error: ", err)
 		return
@@ -471,19 +508,52 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 		log.Fatal(err)
 	}
 
-	var summary Summary
+	// 損益計算書
+	plHTML, err := os.Create(plHTMLFilePath)
+	if err != nil {
+		fmt.Println("PL HTML create err: ", err)
+		return
+	}
+	defer plHTML.Close()
 
+	_, err = plHTML.WriteString(unescapedPL)
+	if err != nil {
+		fmt.Println("PL HTML write err: ", err)
+		return
+	}
+
+	plHTMLFile, err := os.Open(plHTMLFilePath)
+	if err != nil {
+		fmt.Println("PL HTML open error: ", err)
+		return
+	}
+	defer plHTMLFile.Close()
+
+	// goqueryでHTMLをパース
+	plDoc, err := goquery.NewDocumentFromReader(plHTMLFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 貸借対照表データ
+	var summary Summary
 	summary.CompanyName = companyName
 	summary.PeriodStart = periodStart
 	summary.PeriodEnd = periodEnd
-
 	UpdateSummary(doc, &summary)
-	fmt.Println("summary ⭐️: ", summary)
+
+	// 損益計算書データ
+	var plSummary PLSummary
+	plSummary.CompanyName = companyName
+	plSummary.PeriodStart = periodStart
+	plSummary.PeriodEnd = periodEnd
+	UpdatePLSummary(plDoc, &plSummary)
 
 	isSummaryValid := ValidateSummary(summary)
+
+	// 貸借対照表バリデーション後
 	if isSummaryValid {
-		fmt.Println("有効な summary です❗️")
-		jsonName := fmt.Sprintf("%s-%s-from-%s-to-%s.json", EDINETCode, docID, periodStart, periodEnd)
+		jsonName := fmt.Sprintf("%s.json", BSFileNamePattern)
 		jsonPath := fmt.Sprintf("json/%s", jsonName)
 		jsonFile, err := os.Create(jsonPath)
 		if err != nil {
@@ -493,7 +563,6 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 		defer jsonFile.Close()
 
 		jsonBody, err := json.MarshalIndent(summary, "", "  ")
-		fmt.Println("json data: ", string(jsonBody))
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -519,18 +588,175 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 			fmt.Println(err)
 			return
 		}
-		_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
-			Bucket:      aws.String(bucketName),
-			Key:         aws.String(jsonName),
-			Body:        jsonFileOpen,
-			ContentType: aws.String("application/json"),
-		})
+		defer jsonFileOpen.Close()
+
+		splitJsonName := strings.Split(jsonName, "-")
+		if len(splitJsonName) >= 3 {
+			reportType := splitJsonName[2] // BS or PL
+			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, jsonName)
+
+			// ファイルの存在チェック
+			existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+				Bucket: aws.String(bucketName),
+				Key:    aws.String(key),
+			})
+			if existsFile == nil {
+				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+					Bucket:      aws.String(bucketName),
+					Key:         aws.String(key),
+					Body:        jsonFileOpen,
+					ContentType: aws.String("application/json"),
+				})
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, key)
+				fmt.Println(uploadDoneMsg)
+			}
+		}
+
+		// HTML 送信
+		// 貸借対照表HTML
+		bsHTMLFileOpen, err := os.Open(bsHTMLFilePath)
 		if err != nil {
-			fmt.Println(fmt.Sprintf("Couldn't upload file to %v:%v. Here's why: %v\n", jsonName, bucketName, jsonName, err))
+			fmt.Println("BS HTML create err: ", err)
 			return
 		}
+		defer bsHTMLFileOpen.Close()
+
+		splitBSHTMLName := strings.Split(bsHTMLFileName, "-")
+		if len(splitBSHTMLName) >= 3 {
+			reportType := splitBSHTMLName[2] // BS or PL
+			bsHTMLKey := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, bsHTMLFileName)
+
+			// ファイルの存在チェック
+			existsBSHTMLFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+				Bucket: aws.String(bucketName),
+				Key:    aws.String(bsHTMLKey),
+			})
+			if existsBSHTMLFile == nil {
+				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+					Bucket:      aws.String(bucketName),
+					Key:         aws.String(bsHTMLKey),
+					Body:        bsHTMLFileOpen,
+					ContentType: aws.String("text/html"),
+				})
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, bsHTMLKey)
+				fmt.Println(uploadDoneMsg)
+			}
+		}
 	} else {
-		fmt.Println("無効な summary です❌")
+		invalidSummaryMsg := fmt.Sprintf("Invalid Summary (CompanyName: %s, docID: %s)", companyName, docID)
+		fmt.Println(invalidSummaryMsg)
+	}
+
+	// 損益計算書バリデーション後
+	isPLSummaryValid := ValidatePLSummary(plSummary)
+
+	if isPLSummaryValid {
+		jsonName := fmt.Sprintf("%s.json", PLFileNamePattern)
+		jsonPath := fmt.Sprintf("json/%s", jsonName)
+		jsonFile, err := os.Create(jsonPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer jsonFile.Close()
+
+		jsonBody, err := json.MarshalIndent(plSummary, "", "  ")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		_, err = jsonFile.Write(jsonBody)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		// S3 に json ファイルを送信
+		// Key は aws configure で設定する
+		region := os.Getenv("REGION")
+		sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		s3Client := s3.NewFromConfig(sdkConfig)
+		bucketName := os.Getenv("BUCKET_NAME")
+		jsonFileOpen, err := os.Open(jsonPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		splitJsonName := strings.Split(jsonName, "-")
+		if len(splitJsonName) >= 3 {
+			reportType := splitJsonName[2] // BS or PL
+			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, jsonName)
+
+			// ファイルの存在チェック
+			existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+				Bucket: aws.String(bucketName),
+				Key:    aws.String(key),
+			})
+			if existsFile == nil {
+				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+					Bucket:      aws.String(bucketName),
+					Key:         aws.String(key),
+					Body:        jsonFileOpen,
+					ContentType: aws.String("application/json"),
+				})
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, key)
+				fmt.Println(uploadDoneMsg)
+			}
+		}
+
+		// 損益計算書HTML
+		plHTMLFileOpen, err := os.Open(plHTMLFilePath)
+		if err != nil {
+			fmt.Println("PL HTML create err: ", err)
+			return
+		}
+		defer plHTMLFileOpen.Close()
+
+		splitPLHTMLName := strings.Split(plHTMLFileName, "-")
+		if len(splitPLHTMLName) >= 3 {
+			reportType := splitPLHTMLName[2] // BS or PL
+			plHTMLKey := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, plHTMLFileName)
+
+			// ファイルの存在チェック
+			existsPLHTMLFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+				Bucket: aws.String(bucketName),
+				Key:    aws.String(plHTMLKey),
+			})
+			if existsPLHTMLFile == nil {
+				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+					Bucket:      aws.String(bucketName),
+					Key:         aws.String(plHTMLKey),
+					Body:        plHTMLFileOpen,
+					ContentType: aws.String("text/html"),
+				})
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, plHTMLKey)
+				fmt.Println(uploadDoneMsg)
+			}
+		}
+
+	} else {
+		invalidSummaryMsg := fmt.Sprintf("Invalid Summary (CompanyName: %s, docID: %s)", companyName, docID)
+		fmt.Println(invalidSummaryMsg)
 	}
 }
 
@@ -577,6 +803,103 @@ func UpdateSummary(doc *goquery.Document, summary *Summary) {
 				}
 			}
 		}
+		// fmt.Println("titleTexts ❗️: ", titleTexts)
+		// fmt.Println("len(splitTdTexts) ❗️: ", len(splitTdTexts))
+		// fmt.Println(`strings.Contains(titleTexts[0], "単位：") ❗️: `, strings.Contains(titleTexts[0], "単位："))
+		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
+			baseStr := splitTdTexts[0]
+			baseStr = strings.ReplaceAll(baseStr, "(", "")
+			baseStr = strings.ReplaceAll(baseStr, ")", "")
+			splitUnitStrs := strings.Split(baseStr, "：")
+			if len(splitUnitStrs) >= 2 {
+				summary.UnitString = splitUnitStrs[1]
+			}
+		}
+	})
+}
+
+func UpdatePLSummary(doc *goquery.Document, plSummary *PLSummary) {
+	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
+		tdText := s.Find("td").Text()
+		tdText = strings.TrimSpace(tdText)
+		splitTdTexts := strings.Split(tdText, "\n")
+		var titleTexts []string
+		for _, t := range splitTdTexts {
+			if t != "" {
+				titleTexts = append(titleTexts, t)
+			}
+		}
+		if len(titleTexts) >= 3 {
+			isPreviousMinus := false
+			isCurrentMinus := false
+			titleName := titleTexts[0]
+
+			// 数字のみのパターン
+			re := regexp.MustCompile(`\d+`)
+
+			// 前期
+			previous := titleTexts[1]
+			previousStr := strings.ReplaceAll(previous, ",", "")
+			if strings.Contains(previousStr, "△") {
+				isPreviousMinus = true
+			}
+			previousMatch := re.FindString(previousStr)
+			// △ で始まっていたらマイナスにする
+			if isPreviousMinus {
+				previousMatch = "-" + previousMatch
+			}
+			previousInt, prevErr := strconv.Atoi(previousMatch)
+
+			// 当期
+			current := titleTexts[2]
+			currentStr := strings.ReplaceAll(current, ",", "")
+			if strings.Contains(currentStr, "△") {
+				isCurrentMinus = true
+			}
+			currentMatch := re.FindString(currentStr)
+			// △ で始まっていたらマイナスにする
+			if isCurrentMinus {
+				currentMatch = "-" + currentMatch
+			}
+			currentInt, currErr := strconv.Atoi(currentMatch)
+
+			// fmt.Println(fmt.Sprintf("===== %s =====", titleName))
+			// fmt.Println("前期: ", previousInt)
+			// fmt.Println("後期: ", currentInt)
+
+			if prevErr == nil && currErr == nil {
+				switch titleName {
+				case "売上原価":
+					plSummary.CostOfGoodsSold.Previous = previousInt
+					plSummary.CostOfGoodsSold.Current = currentInt
+				case "販売費及び一般管理費":
+					plSummary.SGAndA.Previous = previousInt
+					plSummary.SGAndA.Current = currentInt
+				case "売上高":
+					plSummary.Sales.Previous = previousInt
+					plSummary.Sales.Current = currentInt
+					// case "営業利益":
+					// 	plSummary.OperatingProfit.Previous = previousInt
+					// 	plSummary.OperatingProfit.Current = currentInt
+					// case "営業損失":
+					// 	plSummary.OperatingLoss.Previous = previousInt
+					// 	plSummary.OperatingLoss.Current = currentInt
+				}
+			}
+			if strings.Contains(titleName, "営業利益") {
+				plSummary.OperatingProfit.Previous = previousInt
+				plSummary.OperatingProfit.Current = currentInt
+			}
+		}
+		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
+			baseStr := splitTdTexts[0]
+			baseStr = strings.ReplaceAll(baseStr, "(", "")
+			baseStr = strings.ReplaceAll(baseStr, ")", "")
+			splitUnitStrs := strings.Split(baseStr, "：")
+			if len(splitUnitStrs) >= 2 {
+				plSummary.UnitString = splitUnitStrs[1]
+			}
+		}
 	})
 }
 
@@ -600,3 +923,22 @@ func ValidateSummary(summary Summary) bool {
 	}
 	return false
 }
+
+func ValidatePLSummary(plSummary PLSummary) bool {
+	if plSummary.CompanyName != "" &&
+		plSummary.PeriodStart != "" &&
+		plSummary.PeriodEnd != "" &&
+		plSummary.CostOfGoodsSold.Previous != 0 &&
+		plSummary.CostOfGoodsSold.Current != 0 &&
+		plSummary.SGAndA.Previous != 0 &&
+		plSummary.SGAndA.Current != 0 &&
+		plSummary.Sales.Previous != 0 &&
+		plSummary.Sales.Current != 0 &&
+		plSummary.OperatingProfit.Previous != 0 &&
+		plSummary.OperatingProfit.Current != 0 {
+		return true
+	}
+	return false
+}
+
+// func RegisterCompany(EDINETCode string) {}
