@@ -14,10 +14,10 @@ import (
 var Users = []internal.User{
 	// Password: pass のハッシュ値
 	{
-		Name: "サンプルユーザ", 
-		Password: []byte("$2a$10$lbnP92Wdad2olUA18I1Xbe21Zuma6eoriPCmohCxAku8Bdzo3.SL2"), 
-		Email: "sample@sample.com",
-		Admin: false,
+		Name:     "サンプルユーザ",
+		Password: []byte("$2a$10$lbnP92Wdad2olUA18I1Xbe21Zuma6eoriPCmohCxAku8Bdzo3.SL2"),
+		Email:    "sample@sample.com",
+		Admin:    false,
 	},
 }
 
@@ -359,17 +359,28 @@ var CompanyTitles = []internal.CompanyTitle{
 }
 
 func main() {
-	enverr := godotenv.Load()
-	if enverr != nil {
+	err := godotenv.Load()
+	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
 
-	dbuser := os.Getenv("MYSQL_USER")
-	dbpass := os.Getenv("MYSQL_ROOT_PASSWORD")
-	dbname := os.Getenv("MYSQL_DATABASE")
+	dbUser := os.Getenv("MYSQL_USER")
+	dbPass := os.Getenv("MYSQL_ROOT_PASSWORD")
+	dbName := os.Getenv("MYSQL_DATABASE")
+
+	// create database
+	initialDsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/?charset=utf8mb4&parseTime=True&loc=Local", dbUser, dbPass)
+	initialDb, err := gorm.Open(mysql.Open(initialDsn), &gorm.Config{})
+	if err != nil {
+		log.Fatal("failed to connect database")
+	}
+	createDBSQL := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;", dbName)
+	if err := initialDb.Exec(createDBSQL).Error; err != nil {
+		log.Fatal("Failed to create database: ", err)
+	}
 	// docker コンテナを立ち上げている場合、ホスト名は 127.0.0.1 ではなくサービス名（db）
 	// コンテナ外でスクリプト実行想定のため、ホスト名は 127.0.0.1 にする
-	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/%s?charset=utf8mb4&parseTime=True&loc=Local", dbuser, dbpass, dbname)
+	dsn := fmt.Sprintf("%s:%s@tcp(127.0.0.1:3306)/%s?charset=utf8mb4&parseTime=True&loc=Local", dbUser, dbPass, dbName)
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatal("failed to connect database")
