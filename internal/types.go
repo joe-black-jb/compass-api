@@ -18,12 +18,12 @@ type Company struct {
 	ID            string    `gorm:"primaryKey" json:"id" dynamodbav:"id"`
 	CreatedAt     time.Time `json:"createdAt" dynamodbav:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
-	Name          string `gorm:"unique"  dynamodbav:"name"`
+	Name          string    `gorm:"unique"  dynamodbav:"name"`
 	Established   string
 	Capital       string
 	Titles        []*Title        `gorm:"many2many:company_titles;"`
 	CompanyTitles []*CompanyTitle `gorm:"foreignKey:CompanyID"`
-	EDINETCode    string `gorm:"edinet_code"`
+	EDINETCode    string          `gorm:"edinet_code"`
 }
 
 type Title struct {
@@ -97,5 +97,5 @@ type Login struct {
 
 type HTMLData struct {
 	FileName string `json:"file_name"`
-	Data string `json:"data"`
+	Data     string `json:"data"`
 }

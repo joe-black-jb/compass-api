@@ -115,7 +115,7 @@ func init() {
 		return
 	}
 
-  cfg, cfgErr := config.LoadDefaultConfig(context.TODO())
+	cfg, cfgErr := config.LoadDefaultConfig(context.TODO())
 	if cfgErr != nil {
 		fmt.Println("Load default config error: %v", cfgErr)
 		return
@@ -167,7 +167,7 @@ func main() {
 		// fmt.Println("docID: ", docID)
 		// fmt.Println("periodStart: ", periodStart)
 		// fmt.Println("periodEnd: ", periodEnd)
-    RegisterCompany(dynamoClient, EDINETCode, companyName)
+		RegisterCompany(dynamoClient, EDINETCode, companyName)
 		RegisterReport(EDINETCode, docID, companyName, periodStart, periodEnd)
 	}
 
@@ -955,14 +955,14 @@ func ValidatePLSummary(plSummary PLSummary) bool {
 }
 
 func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyName string) {
-  var company internal.Company
-  id, uuidErr := uuid.NewUUID()
+	var company internal.Company
+	id, uuidErr := uuid.NewUUID()
 	if uuidErr != nil {
 		fmt.Println("uuid create error")
 	}
 	company.ID = id.String()
-  company.EDINETCode = EDINETCode
-  company.Name = companyName
+	company.EDINETCode = EDINETCode
+	company.Name = companyName
 
 	item, err := attributevalue.MarshalMap(company)
 	if err != nil {

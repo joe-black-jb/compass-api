@@ -37,7 +37,7 @@ func init() {
 		return
 	}
 	region := os.Getenv("REGION")
-  cfg, cfgErr := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	cfg, cfgErr := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 	if cfgErr != nil {
 		fmt.Println("Load default config error: %v", cfgErr)
 		return
@@ -55,7 +55,7 @@ func GetCompanies(c *gin.Context) {
 	for {
 		scanInput := &dynamodb.ScanInput{
 			TableName: aws.String("compass_companies"),
-			Limit: aws.Int32(50),
+			Limit:     aws.Int32(50),
 		}
 		if lastEvaluatedKey != nil {
 			scanInput.ExclusiveStartKey = lastEvaluatedKey
@@ -564,7 +564,7 @@ func GetBSHTMLs(c *gin.Context) {
 	for _, key := range keys {
 		input := &s3.GetObjectInput{
 			Bucket: aws.String(bucketName),
-			Key: aws.String(key),
+			Key:    aws.String(key),
 		}
 		// オブジェクトを取得
 		result, err := s3Client.GetObject(context.TODO(), input)
