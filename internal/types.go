@@ -1,24 +1,29 @@
 package internal
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 )
 
 type User struct {
 	gorm.Model
-	Name string
-	Email string `gorm:"unique"`
+	Name     string
+	Email    string `gorm:"unique"`
 	Password []byte
-	Admin bool
+	Admin    bool
 }
 
 type Company struct {
-	gorm.Model
-	Name          string `gorm:"unique"`
+	ID            string    `gorm:"primaryKey" json:"id" dynamodbav:"id"`
+	CreatedAt     time.Time `json:"createdAt" dynamodbav:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
+	Name          string `gorm:"unique"  dynamodbav:"name"`
 	Established   string
 	Capital       string
 	Titles        []*Title        `gorm:"many2many:company_titles;"`
 	CompanyTitles []*CompanyTitle `gorm:"foreignKey:CompanyID"`
+	EDINETCode    string `gorm:"edinet_code"`
 }
 
 type Title struct {
@@ -70,22 +75,27 @@ type Error struct {
 }
 
 type Ok struct {
-	Status int
+	Status  int
 	Message string
 }
 
 type Credentials struct {
-	Email string
+	Email    string
 	Password string
 }
 
 type RegisterUserBody struct {
-	Name *string
-	Email *string
+	Name     *string
+	Email    *string
 	Password *string
 }
 
 type Login struct {
 	Username string
-	Token string
+	Token    string
+}
+
+type HTMLData struct {
+	FileName string `json:"file_name"`
+	Data string `json:"data"`
 }
