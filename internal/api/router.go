@@ -121,6 +121,7 @@ func Router() {
 	router.DELETE("/title/:id", DeleteTitle)
 	router.POST("/register", RegisterUser)
 	router.POST("/login", Login)
+	router.GET("/bs/html", GetBSHTMLs)
 
 	// 認証が必要なエンドポイント
 	auth := router.Group("/")
