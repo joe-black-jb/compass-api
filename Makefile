@@ -1,3 +1,4 @@
+.PHONY: xbrl
 # 変数
 GO := go
 APP_DIR := ./scripts
@@ -11,3 +12,6 @@ lint:
 
 fmt:
 	go fmt ./...
+
+xbrl:
+	go run ./batch/getXBRL.go
