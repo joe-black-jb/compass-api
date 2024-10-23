@@ -1,36 +1,127 @@
 package api
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/joe-black-jb/compass-api/internal"
 	"github.com/joe-black-jb/compass-api/internal/database"
+	"github.com/joho/godotenv"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
-func GetCompanies(c *gin.Context) {
-	Companies := &[]internal.Company{}
-	if err := database.Db.Find(Companies).Error; err != nil {
-		c.IndentedJSON(http.StatusNotFound, err)
+var dynamoClient *dynamodb.Client
+var s3Client *s3.Client
+
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file err: ", err)
+		return
 	}
-	c.IndentedJSON(http.StatusOK, Companies)
+	region := os.Getenv("REGION")
+  cfg, cfgErr := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	if cfgErr != nil {
+		fmt.Println("Load default config error: %v", cfgErr)
+		return
+	}
+	s3Client = s3.NewFromConfig(cfg)
+	dynamoClient = dynamodb.NewFromConfig(cfg)
+}
+
+func GetCompanies(c *gin.Context) {
+	// fmt.Println("==== ⭐️ GetCompanies ⭐️ ====")
+	var companies []internal.Company
+	// pagination 用
+	var lastEvaluatedKey map[string]types.AttributeValue
+
+	for {
+		scanInput := &dynamodb.ScanInput{
+			TableName: aws.String("compass_companies"),
+			Limit: aws.Int32(50),
+		}
+		if lastEvaluatedKey != nil {
+			scanInput.ExclusiveStartKey = lastEvaluatedKey
+		}
+		result, err := dynamoClient.Scan(context.TODO(), scanInput)
+		if err != nil {
+			fmt.Println("scan err: ", err)
+			c.JSON(http.StatusInternalServerError, err)
+		}
+
+		var batch []internal.Company
+		// 取得したアイテムを Place 構造体に変換
+		err = attributevalue.UnmarshalListOfMaps(result.Items, &batch)
+		if err != nil {
+			fmt.Println("unMarshal err: ", err)
+			c.JSON(http.StatusInternalServerError, err)
+		}
+
+		companies = append(companies, batch...)
+
+		if result.LastEvaluatedKey == nil {
+			break
+		}
+		lastEvaluatedKey = result.LastEvaluatedKey
+	}
+
+	// // companies のスライスを JSON にシリアライズ
+	// body, err := json.Marshal(companies)
+	// if err != nil {
+	// 	fmt.Println("failed to marshal companies to json: ", err)
+	// 	c.JSON(http.StatusInternalServerError, err)
+	// }
+	c.IndentedJSON(http.StatusOK, companies)
 }
 
 func GetCompany(c *gin.Context) {
-	Id := c.Param("id")
-	Company := &internal.Company{}
-	if err := database.Db.First(Company, Id).Error; err != nil {
-		c.IndentedJSON(http.StatusNotFound, err)
+	// fmt.Println("==== ⭐️ GetCompany ⭐️ ====")
+
+	id := c.Param("id")
+	// fmt.Println("id: ", id)
+	var company internal.Company
+
+	companyId, err := attributevalue.Marshal(company.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, err)
 	}
-	c.IndentedJSON(http.StatusOK, Company)
+	fmt.Println("companyId: ", companyId)
+
+	getItemInput := &dynamodb.GetItemInput{
+		TableName: aws.String("compass_companies"),
+		Key: map[string]types.AttributeValue{
+			"id": &types.AttributeValueMemberS{Value: id}, // 取得したい id の値を指定
+		},
+	}
+	getItemOutput, err := dynamoClient.GetItem(context.TODO(), getItemInput)
+	if err != nil {
+		getItemNgMsg := fmt.Sprintf("「%s」getItem error: %v", company.Name, err)
+		fmt.Println(getItemNgMsg)
+		c.JSON(http.StatusInternalServerError, err)
+	}
+	fmt.Println("getItemOutput ⭐️: ", getItemOutput)
+	err = attributevalue.UnmarshalMap(getItemOutput.Item, &company)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, err)
+	}
+	c.IndentedJSON(http.StatusOK, company)
 }
 
 func GetTitles(c *gin.Context) {
@@ -303,12 +394,12 @@ func RegisterUser(c *gin.Context) {
 		c.JSON(http.StatusNotFound, err)
 	}
 	var errors []string
-	if reqBody.Name == nil{
+	if reqBody.Name == nil {
 		errors = append(errors, "名前")
 	}
 	if reqBody.Password == nil {
 		errors = append(errors, "パスワード")
-	} 
+	}
 	if reqBody.Email == nil {
 		errors = append(errors, "メールアドレス")
 	}
@@ -383,12 +474,12 @@ func Login(c *gin.Context) {
 	// jwt トークンの生成
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"username": user.Name,
-		"exp": time.Now().Add(time.Hour * 24).Unix(),
-		"admin": user.Admin,
+		"exp":      time.Now().Add(time.Hour * 24).Unix(),
+		"admin":    user.Admin,
 	})
 
 	// 秘密鍵の確認
-  jwtSecret := os.Getenv("SECRET_KEY")
+	jwtSecret := os.Getenv("SECRET_KEY")
 	if jwtSecret == "" {
 		c.JSON(http.StatusInternalServerError, "err")
 		return
@@ -423,4 +514,74 @@ func AuthUser(c *gin.Context) {
 	} else {
 		c.JSON(http.StatusOK, false)
 	}
+}
+
+/*
+- S3 から EDINETコード 配下にある BS データが記載された HTML 一覧を取得する
+- HTML の中身を string で返してフロントで parse する
+*/
+func GetBSHTMLs(c *gin.Context) {
+	fmt.Println("=== ⭐️ GetBSHTMLs ⭐️ ===")
+	EDINETCode := c.Query("EDINETCode")
+	fmt.Println("EDINETCode: ", EDINETCode)
+
+	// S3 から BS HTML 一覧を取得
+	bucketName := os.Getenv("BUCKET_NAME")
+	// プレフィックス (ディレクトリのようなもの)
+	prefix := fmt.Sprintf("%s/", EDINETCode)
+
+	// ListObjectsV2Inputを使って、特定のプレフィックスにマッチするオブジェクトをリストアップ
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+		Prefix: aws.String(prefix),
+	}
+
+	// オブジェクト一覧を取得
+	result, err := s3Client.ListObjectsV2(context.TODO(), input)
+	if err != nil {
+		log.Fatalf("failed to list objects, %v", err)
+	}
+
+	var keys []string
+	// .htmlファイルだけをフィルタリング
+	for _, item := range result.Contents {
+		key := *item.Key
+		if strings.HasSuffix(key, ".html") {
+			// fmt.Println("HTML File:", key)
+			splitFileName := strings.Split(key, "/")
+			if len(splitFileName) >= 2 {
+				fileType := splitFileName[1] // BS or PL
+				if fileType == "BS" {
+					keys = append(keys, key)
+				}
+			}
+		}
+	}
+	// fmt.Println("取得対象ファイル: ", keys)
+
+	var htmlData []internal.HTMLData
+	// HTML の中身を取得
+	for _, key := range keys {
+		input := &s3.GetObjectInput{
+			Bucket: aws.String(bucketName),
+			Key: aws.String(key),
+		}
+		// オブジェクトを取得
+		result, err := s3Client.GetObject(context.TODO(), input)
+		if err != nil {
+			log.Fatalf("failed to get object, %v", err)
+		}
+		// fmt.Println("取得した object: ", result)
+		fmt.Println("取得した object の Body: ", result.Body)
+		body, err := io.ReadAll(result.Body)
+		if err != nil {
+			fmt.Println("io.ReadAll err: ", err)
+			c.JSON(http.StatusInternalServerError, err)
+		}
+		var data internal.HTMLData
+		data.FileName = key
+		data.Data = string(body)
+		htmlData = append(htmlData, data)
+	}
+	c.IndentedJSON(http.StatusOK, htmlData)
 }
