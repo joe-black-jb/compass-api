@@ -20,7 +20,11 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
+	"github.com/joe-black-jb/compass-api/internal"
 	"github.com/joho/godotenv"
 )
 
@@ -97,6 +101,8 @@ type MyError interface {
 
 var EDINETAPIKey string
 
+var dynamoClient *dynamodb.Client
+
 func init() {
 	err := godotenv.Load()
 	if err != nil {
@@ -108,6 +114,13 @@ func init() {
 		fmt.Println("API key not found")
 		return
 	}
+
+  cfg, cfgErr := config.LoadDefaultConfig(context.TODO())
+	if cfgErr != nil {
+		fmt.Println("Load default config error: %v", cfgErr)
+		return
+	}
+	dynamoClient = dynamodb.NewFromConfig(cfg)
 }
 
 func main() {
@@ -154,8 +167,8 @@ func main() {
 		// fmt.Println("docID: ", docID)
 		// fmt.Println("periodStart: ", periodStart)
 		// fmt.Println("periodEnd: ", periodEnd)
+    RegisterCompany(dynamoClient, EDINETCode, companyName)
 		RegisterReport(EDINETCode, docID, companyName, periodStart, periodEnd)
-    // RegisterCompany(EDINETCode)
 	}
 
 	fmt.Println("All processes done ⭐️")
@@ -941,4 +954,30 @@ func ValidatePLSummary(plSummary PLSummary) bool {
 	return false
 }
 
-// func RegisterCompany(EDINETCode string) {}
+func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyName string) {
+  var company internal.Company
+  id, uuidErr := uuid.NewUUID()
+	if uuidErr != nil {
+		fmt.Println("uuid create error")
+	}
+	company.ID = id.String()
+  company.EDINETCode = EDINETCode
+  company.Name = companyName
+
+	item, err := attributevalue.MarshalMap(company)
+	if err != nil {
+		fmt.Println("MarshalMap err: ", err)
+	}
+
+	input := &dynamodb.PutItemInput{
+		TableName: aws.String("compass_companies"),
+		Item:      item,
+	}
+	// TODO: 同名の企業がある場合はDBに追加しない
+	result, err := dynamoClient.PutItem(context.TODO(), input)
+	if err != nil {
+		fmt.Println("dynamoClient.PutItem err: ", err)
+	}
+	doneMsg := fmt.Sprintf("「%s」result %v ⭐️", companyName, result)
+	fmt.Println(doneMsg)
+}
