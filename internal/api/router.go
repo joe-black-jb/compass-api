@@ -112,7 +112,6 @@ func Router() {
 	router.GET("/titles", GetTitles)
 	// router.GET("/company/:id/with-title", GetCompanyTitles)
 	// 一時的にコメントアウト↓
-	router.GET("/company/:id/titles", GetCompanyTitles)
 	router.GET("/company/:id", GetCompany)
 	router.PUT("/company/:id/title/:titleId", UpdateCompanyTitles)
 	router.PUT("/title/:id", UpdateTitle)
@@ -121,7 +120,8 @@ func Router() {
 	router.DELETE("/title/:id", DeleteTitle)
 	router.POST("/register", RegisterUser)
 	router.POST("/login", Login)
-	router.GET("/bs/html", GetBSHTMLs)
+	router.GET("/reports", GetReports)
+	router.GET("/fundamentals", GetFundamentals)
 
 	// 認証が必要なエンドポイント
 	auth := router.Group("/")

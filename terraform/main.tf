@@ -18,6 +18,16 @@ resource "aws_dynamodb_table" "compass-dynamodb-table" {
     type = "S"
   }
 
+  attribute {
+    name = "bs"
+    type = "N"
+  }
+
+  attribute {
+    name = "pl"
+    type = "N"
+  }
+
   global_secondary_index {
     name               = "CompanyNameIndex"
     hash_key           = "name"

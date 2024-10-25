@@ -2,13 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -145,47 +145,6 @@ func GetTitles(c *gin.Context) {
 	fmt.Println("親の数: ", len(parents))
 
 	c.IndentedJSON(http.StatusOK, Titles)
-}
-
-func GetCompanyTitles(c *gin.Context) {
-	Id := c.Param("id")
-	Company := &internal.Company{}
-	if err := database.Db.Preload("Titles").First(Company, Id).Error; err != nil {
-		c.IndentedJSON(http.StatusNotFound, err)
-	}
-	// クエリー付きの場合
-	titleId := c.Query("title_id")
-	if titleId != "" {
-		queryTitleIdInt, err := strconv.Atoi(titleId)
-		if err != nil {
-			err := &internal.Error{}
-			err.Status = http.StatusBadRequest
-			err.Message = fmt.Sprintf("不正なIDです。ID: %v", titleId)
-			c.JSON(http.StatusBadRequest, err)
-			return
-		}
-		var queryTitleUint uint = uint(queryTitleIdInt)
-
-		var targetTitle *internal.Title
-		for _, title := range Company.Titles {
-			if title.ID == queryTitleUint {
-				targetTitle = title
-				break
-			}
-		}
-		if targetTitle != nil {
-			c.JSON(http.StatusOK, targetTitle)
-		} else {
-			err := &internal.Error{}
-			err.Status = http.StatusBadRequest
-			err.Message = fmt.Sprintf("指定したIDの項目が見つかりませんでした。ID: %v", titleId)
-			c.JSON(http.StatusBadRequest, err)
-			return
-		}
-		return
-	}
-	fmt.Println("ID 1 の会社が持つ項目: ", Company)
-	c.IndentedJSON(http.StatusOK, Company)
 }
 
 func UpdateCompanyTitles(c *gin.Context) {
@@ -520,10 +479,10 @@ func AuthUser(c *gin.Context) {
 - S3 から EDINETコード 配下にある BS データが記載された HTML 一覧を取得する
 - HTML の中身を string で返してフロントで parse する
 */
-func GetBSHTMLs(c *gin.Context) {
-	fmt.Println("=== ⭐️ GetBSHTMLs ⭐️ ===")
+func GetReports(c *gin.Context) {
 	EDINETCode := c.Query("EDINETCode")
-	fmt.Println("EDINETCode: ", EDINETCode)
+	reportType := c.Query("reportType")
+	extension := c.Query("extension")
 
 	// S3 から BS HTML 一覧を取得
 	bucketName := os.Getenv("BUCKET_NAME")
@@ -546,21 +505,33 @@ func GetBSHTMLs(c *gin.Context) {
 	// .htmlファイルだけをフィルタリング
 	for _, item := range result.Contents {
 		key := *item.Key
-		if strings.HasSuffix(key, ".html") {
-			// fmt.Println("HTML File:", key)
-			splitFileName := strings.Split(key, "/")
-			if len(splitFileName) >= 2 {
-				fileType := splitFileName[1] // BS or PL
-				if fileType == "BS" {
-					keys = append(keys, key)
-				}
-			}
-		}
+    if extension == "html" {
+      if strings.HasSuffix(key, ".html") {
+        splitFileName := strings.Split(key, "/")
+        if len(splitFileName) >= 2 {
+          fileType := splitFileName[1] // BS or PL
+          if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
+            keys = append(keys, key)
+          }
+        }
+      }
+    }
+    if extension == "json" {
+      if strings.HasSuffix(key, ".json") {
+        splitFileName := strings.Split(key, "/")
+        if len(splitFileName) >= 2 {
+          fileType := splitFileName[1] // BS or PL
+          if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
+            keys = append(keys, key)
+          }
+        }
+      }
+    }
 	}
 	// fmt.Println("取得対象ファイル: ", keys)
 
-	var htmlData []internal.HTMLData
-	// HTML の中身を取得
+	var reportData []internal.ReportData
+	// レポートファイルの中身を取得
 	for _, key := range keys {
 		input := &s3.GetObjectInput{
 			Bucket: aws.String(bucketName),
@@ -578,10 +549,63 @@ func GetBSHTMLs(c *gin.Context) {
 			fmt.Println("io.ReadAll err: ", err)
 			c.JSON(http.StatusInternalServerError, err)
 		}
-		var data internal.HTMLData
+		var data internal.ReportData
 		data.FileName = key
 		data.Data = string(body)
-		htmlData = append(htmlData, data)
+		reportData = append(reportData, data)
 	}
-	c.IndentedJSON(http.StatusOK, htmlData)
+	c.IndentedJSON(http.StatusOK, reportData)
+}
+
+func GetFundamentals(c *gin.Context) {
+	EDINETCode := c.Query("EDINETCode")
+	// periodStart := c.Query("periodStart")
+
+	// S3 から BS HTML 一覧を取得
+	bucketName := os.Getenv("BUCKET_NAME")
+	// プレフィックス (ディレクトリのようなもの)
+	prefix := fmt.Sprintf("%s/Fundamentals", EDINETCode)
+
+	// ListObjectsV2Inputを使って、特定のプレフィックスにマッチするオブジェクトをリストアップ
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+		Prefix: aws.String(prefix),
+	}
+
+	// オブジェクト一覧を取得
+	result, err := s3Client.ListObjectsV2(context.TODO(), input)
+	if err != nil {
+		log.Fatalf("failed to list objects, %v", err)
+	}
+
+	// var keys []string
+	// .htmlファイルだけをフィルタリング
+	var fundamentals []internal.Fundamental
+	for _, item := range result.Contents {
+		var fundamental internal.Fundamental
+		key := *item.Key
+		fmt.Println("getObject key: ", key)
+    // key を指定し json ファイルを取得
+		result, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
+			Bucket: aws.String(bucketName),
+			Key:    aws.String(key),
+		})
+		if err != nil {
+			fmt.Println("s3 getObject err: ", err)
+			return
+		}
+		body, err := io.ReadAll(result.Body)
+		if err != nil {
+			fmt.Println("getObject io.ReadAll err: ", err)
+			return
+		}
+		fmt.Println("string(body): ", string(body))
+		err = json.Unmarshal(body, &fundamental)
+		if err != nil {
+			fmt.Println("s3 getObject Unmarshal err: ", err)
+			return
+		}
+		fundamentals = append(fundamentals, fundamental)
+	}
+	c.IndentedJSON(http.StatusOK, fundamentals)
 }

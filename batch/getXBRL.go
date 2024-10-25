@@ -22,82 +22,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/joe-black-jb/compass-api/internal"
 	"github.com/joho/godotenv"
 )
-
-// <link:schemaRef> 要素
-type SchemaRef struct {
-	Href string `xml:"xlink:href,attr"`
-	Type string `xml:"xlink:type,attr"`
-}
-
-// <xbrli:identifier> 要素
-type Identifier struct {
-	Scheme string `xml:"scheme,attr"`
-	Value  string `xml:",chardata"`
-}
-
-// <xbrli:entity> 要素
-type Entity struct {
-	Identifier Identifier `xml:"identifier"`
-}
-
-// <xbrli:period> 要素
-type Period struct {
-	Instant string `xml:"instant"`
-}
-
-// <xbrli:context> 要素
-type Context struct {
-	ID     string `xml:"id,attr"`
-	Entity Entity `xml:"entity"`
-	Period Period `xml:"period"`
-}
-
-// <jppfs_cor:MoneyHeldInTrustCAFND> タグの構造体
-type MoneyHeldInTrust struct {
-	ContextRef string `xml:"contextRef,attr"`
-	Decimals   string `xml:"decimals,attr"`
-	UnitRef    string `xml:"unitRef,attr"`
-	Value      string `xml:",chardata"`
-}
-
-// 貸借対照表の行（Assets or Liabilities）
-type BalanceSheetItem struct {
-	Description string `xml:"td>p>span"`              // 項目名
-	AmountYear1 string `xml:"td:nth-child(2)>p>span"` // 特定28期の金額
-	AmountYear2 string `xml:"td:nth-child(3)>p>span"` // 特定29期の金額
-}
-
-// 貸借対照表の構造体
-type BalanceSheet struct {
-	Title string             `xml:"p>span"`   // 貸借対照表のタイトル
-	Unit  string             `xml:"caption"`  // 単位
-	Items []BalanceSheetItem `xml:"tbody>tr"` // 資産、負債の各項目
-}
-
-// XML全体のルート構造体
-type XBRL struct {
-	XMLName                                                                 xml.Name         `xml:"xbrl"`
-	SchemaRef                                                               SchemaRef        `xml:"schemaRef"`
-	Contexts                                                                []Context        `xml:"context"`
-	MoneyHeldInTrust                                                        MoneyHeldInTrust `xml:"MoneyHeldInTrustCAFND"`
-	BalanceSheetTextBlock                                                   BalanceSheet     `xml:"BalanceSheetTextBlock"`
-	NotesFinancialInformationOfInvestmentTrustManagementCompanyEtcTextBlock BalanceSheet     `xml:"NotesFinancialInformationOfInvestmentTrustManagementCompanyEtcTextBlock"`
-}
-
-// 項目ごとの値
-type TitleValue struct {
-	Previous int `json:"previous"`
-	Current  int `json:"current"`
-}
-
-type MyError interface {
-	Error() string
-}
 
 var EDINETAPIKey string
 
@@ -161,14 +91,24 @@ func main() {
 		if report.PeriodEnd != "" {
 			periodEnd = report.PeriodEnd
 		}
-		// fmt.Println("資料名 ⭐️: ", report.DocDescription)
-		// fmt.Println("コード: ", EDINETCode)
-		// fmt.Println("企業名: ", companyName)
-		// fmt.Println("docID: ", docID)
-		// fmt.Println("periodStart: ", periodStart)
-		// fmt.Println("periodEnd: ", periodEnd)
-		RegisterCompany(dynamoClient, EDINETCode, companyName)
-		RegisterReport(EDINETCode, docID, companyName, periodStart, periodEnd)
+
+    // ファンダメンタルズ
+    fundamental := internal.Fundamental{
+      CompanyName: companyName,
+      PeriodStart: periodStart,
+      PeriodEnd: periodEnd,
+      Sales: 0,
+      OperatingProfit: 0,
+      Liabilities: 0,
+      NetAssets: 0,
+    }
+		RegisterReport(dynamoClient, EDINETCode, docID, companyName, periodStart, periodEnd, &fundamental)
+    fmt.Println("ファンダメンタル ⭐️: ", fundamental)
+    // ファンダメンタル用jsonの送信
+    if ValidateFundamentals(fundamental) {
+      // E05492 フィンテック
+      RegisterFundamental(dynamoClient, fundamental, EDINETCode)
+    }
 	}
 
 	fmt.Println("All processes done ⭐️")
@@ -233,74 +173,20 @@ func unzip(source, destination string) (string, error) {
 	return XBRLFilepath, nil
 }
 
-type Param struct {
-	Date string `json:"date"`
-	Type string `json:"type"`
-}
-
-type ResultCount struct {
-	Count int `json:"count"`
-}
-
-type Meta struct {
-	Title           string      `json:"title"`
-	Parameter       Param       `json:"parameter"`
-	ResultSet       ResultCount `json:"resultset"`
-	ProcessDateTime string      `json:"processDateTime"`
-	Status          string      `json:"status"`
-	Message         string      `json:"message"`
-}
-
-type Result struct {
-	SeqNumber            int    `json:"seqNumber"`
-	DocId                string `json:"docId"`
-	EdinetCode           string `json:"edinetCode"`
-	SecCode              string `json:"secCode"`
-	JCN                  string `json:"JCN"`
-	FilerName            string `json:"filerName"` // 企業名
-	FundCode             string `json:"fundCode"`
-	OrdinanceCode        string `json:"ordinanceCode"`
-	FormCode             string `json:"formCode"`
-	DocTypeCode          string `json:"docTypeCode"`
-	PeriodStart          string `json:"periodStart"`
-	PeriodEnd            string `json:"periodEnd"`
-	SubmitDateTime       string `json:"submitDateTime"` // Date にしたほうがいいかも
-	DocDescription       string `json:"docDescription"` // 資料名
-	IssuerEdinetCode     string `json:"issuerEdinetCode"`
-	SubjectEdinetCode    string `json:"subjectEdinetCode"`
-	SubsidiaryEdinetCode string `json:"subsidiaryEdinetCode"`
-	CurrentReportReason  string `json:"currentReportReason"`
-	ParentDocID          string `json:"parentDocID"`
-	OpeDateTime          string `json:"opeDateTime"` // Date かも
-	WithdrawalStatus     string `json:"withdrawalStatus"`
-	DocInfoEditStatus    string `json:"docInfoEditStatus"`
-	DisclosureStatus     string `json:"disclosureStatus"`
-	XbrlFlag             string `json:"xbrlFlag"`
-	PdfFlag              string `json:"pdfFlag"`
-	AttachDocFlag        string `json:"attachDocFlag"`
-	CsvFlag              string `json:"csvFlag"`
-	LegalStatus          string `json:"legalStatus"`
-}
-
-type Report struct {
-	Metadata Meta     `json:"metadata"`
-	Results  []Result `json:"results"`
-}
-
 /*
 EDINET 書類一覧取得 API を使用し有価証券報告書または訂正有価証券報告書のデータを取得する
 */
-func GetReports() ([]Result, error) {
+func GetReports() ([]internal.Result, error) {
 	loc, err := time.LoadLocation("Asia/Tokyo")
 	if err != nil {
 		fmt.Println("load location error")
 		return nil, err
 	}
 
-	var results []Result
+	var results []internal.Result
 	date := time.Date(2023, time.January, 1, 1, 0, 0, 0, loc)
 	for i := 0; i < 20; i++ {
-		var statement Report
+		var statement internal.Report
 
 		dateStr := date.Format("2006-01-02")
 		url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents.json?date=%s&&Subscription-Key=%s&type=2", dateStr, EDINETAPIKey)
@@ -336,35 +222,7 @@ func GetReports() ([]Result, error) {
 	return results, nil
 }
 
-/*
-B/S の値のうち比例縮尺図に使うもの
-*/
-type Summary struct {
-	CompanyName               string     `json:"company_name"`
-	PeriodStart               string     `json:"period_start"`
-	PeriodEnd                 string     `json:"period_end"`
-	UnitString                string     `json:"unit_string"`                  // 単位
-	TangibleAssets            TitleValue `json:"tangible_assets"`              // 有形固定資産
-	IntangibleAssets          TitleValue `json:"intangible_assets"`            // 無形固定資産
-	InvestmentsAndOtherAssets TitleValue `json:"investments_and_other_assets"` // 投資その他の資産
-	CurrentLiabilities        TitleValue `json:"current_liabilities"`          // 流動負債
-	FixedLiabilities          TitleValue `json:"fixed_liabilities"`            // 固定負債
-	NetAssets                 TitleValue `json:"net_assets"`                   // 純資産
-}
-
-type PLSummary struct {
-	CompanyName     string     `json:"company_name"`
-	PeriodStart     string     `json:"period_start"`
-	PeriodEnd       string     `json:"period_end"`
-	UnitString      string     `json:"unit_string"`
-	CostOfGoodsSold TitleValue `json:"cost_of_goods_sold"` // 売上原価
-	SGAndA          TitleValue `json:"sg_and_a"`           // 販売費及び一般管理費
-	Sales           TitleValue `json:"sales"`              // 売上高
-	OperatingProfit TitleValue `json:"operating_profit"`   // 営業利益
-	// OperatingLoss             TitleValue `json:"operating_loss"` // 営業損失
-}
-
-func RegisterReport(EDINETCode string, docID string, companyName string, periodStart string, periodEnd string) {
+func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID string, companyName string, periodStart string, periodEnd string, fundamental *internal.Fundamental) {
 	BSFileNamePattern := fmt.Sprintf("%s-%s-BS-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
 	PLFileNamePattern := fmt.Sprintf("%s-%s-PL-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
 
@@ -423,7 +281,7 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 		return
 	}
 
-	var xbrl XBRL
+	var xbrl internal.XBRL
 	err = xml.Unmarshal(body, &xbrl)
 	if err != nil {
 		fmt.Println("XBRL Unmarshal err: ", err)
@@ -549,23 +407,28 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 	}
 
 	// 貸借対照表データ
-	var summary Summary
+	var summary internal.Summary
 	summary.CompanyName = companyName
 	summary.PeriodStart = periodStart
 	summary.PeriodEnd = periodEnd
-	UpdateSummary(doc, &summary)
+	UpdateSummary(doc, &summary, fundamental)
 
 	// 損益計算書データ
-	var plSummary PLSummary
+	var plSummary internal.PLSummary
 	plSummary.CompanyName = companyName
 	plSummary.PeriodStart = periodStart
 	plSummary.PeriodEnd = periodEnd
-	UpdatePLSummary(plDoc, &plSummary)
+	UpdatePLSummary(plDoc, &plSummary, fundamental)
 
 	isSummaryValid := ValidateSummary(summary)
 
+  // fmt.Println("summary ⭐️: ", summary)
+
 	// 貸借対照表バリデーション後
 	if isSummaryValid {
+    // RegisterCompany
+    RegisterCompany(dynamoClient, EDINETCode, companyName, isSummaryValid, false)
+    // fmt.Println("有効な BS です❗️")
 		jsonName := fmt.Sprintf("%s.json", BSFileNamePattern)
 		jsonPath := fmt.Sprintf("json/%s", jsonName)
 		jsonFile, err := os.Create(jsonPath)
@@ -664,7 +527,7 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 			}
 		}
 	} else {
-		invalidSummaryMsg := fmt.Sprintf("Invalid Summary (CompanyName: %s, docID: %s)", companyName, docID)
+		invalidSummaryMsg := fmt.Sprintf("Invalid BS Summary (CompanyName: %s, docID: %s)", companyName, docID)
 		fmt.Println(invalidSummaryMsg)
 	}
 
@@ -672,6 +535,9 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 	isPLSummaryValid := ValidatePLSummary(plSummary)
 
 	if isPLSummaryValid {
+    // fmt.Println("有効な PL です❗️")
+    // RegisterCompany
+    RegisterCompany(dynamoClient, EDINETCode, companyName, false, isPLSummaryValid)
 		jsonName := fmt.Sprintf("%s.json", PLFileNamePattern)
 		jsonPath := fmt.Sprintf("json/%s", jsonName)
 		jsonFile, err := os.Create(jsonPath)
@@ -768,12 +634,12 @@ func RegisterReport(EDINETCode string, docID string, companyName string, periodS
 		}
 
 	} else {
-		invalidSummaryMsg := fmt.Sprintf("Invalid Summary (CompanyName: %s, docID: %s)", companyName, docID)
+		invalidSummaryMsg := fmt.Sprintf("Invalid PL Summary (CompanyName: %s, docID: %s)", companyName, docID)
 		fmt.Println(invalidSummaryMsg)
 	}
 }
 
-func UpdateSummary(doc *goquery.Document, summary *Summary) {
+func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental *internal.Fundamental) {
 	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
 		tdText := s.Find("td").Text()
 		tdText = strings.TrimSpace(tdText)
@@ -795,6 +661,9 @@ func UpdateSummary(doc *goquery.Document, summary *Summary) {
 
 			if prevErr == nil && currErr == nil {
 				switch titleName {
+        case "流動資産合計":
+          summary.CurrentAssets.Previous = previousInt
+					summary.CurrentAssets.Current = currentInt
 				case "有形固定資産合計":
 					summary.TangibleAssets.Previous = previousInt
 					summary.TangibleAssets.Current = currentInt
@@ -813,6 +682,11 @@ func UpdateSummary(doc *goquery.Document, summary *Summary) {
 				case "純資産合計":
 					summary.NetAssets.Previous = previousInt
 					summary.NetAssets.Current = currentInt
+          // fundamental
+          fundamental.NetAssets = currentInt
+				case "負債合計":
+          // fundamental
+          fundamental.Liabilities = currentInt
 				}
 			}
 		}
@@ -831,7 +705,7 @@ func UpdateSummary(doc *goquery.Document, summary *Summary) {
 	})
 }
 
-func UpdatePLSummary(doc *goquery.Document, plSummary *PLSummary) {
+func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, fundamental *internal.Fundamental) {
 	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
 		tdText := s.Find("td").Text()
 		tdText = strings.TrimSpace(tdText)
@@ -891,6 +765,8 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *PLSummary) {
 				case "売上高":
 					plSummary.Sales.Previous = previousInt
 					plSummary.Sales.Current = currentInt
+          // fundamental
+          fundamental.Sales = currentInt
 					// case "営業利益":
 					// 	plSummary.OperatingProfit.Previous = previousInt
 					// 	plSummary.OperatingProfit.Current = currentInt
@@ -902,6 +778,8 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *PLSummary) {
 			if strings.Contains(titleName, "営業利益") {
 				plSummary.OperatingProfit.Previous = previousInt
 				plSummary.OperatingProfit.Current = currentInt
+        // fundamental
+        fundamental.OperatingProfit = currentInt
 			}
 		}
 		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
@@ -916,7 +794,7 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *PLSummary) {
 	})
 }
 
-func ValidateSummary(summary Summary) bool {
+func ValidateSummary(summary internal.Summary) bool {
 	if summary.CompanyName != "" &&
 		summary.PeriodStart != "" &&
 		summary.PeriodEnd != "" &&
@@ -937,7 +815,7 @@ func ValidateSummary(summary Summary) bool {
 	return false
 }
 
-func ValidatePLSummary(plSummary PLSummary) bool {
+func ValidatePLSummary(plSummary internal.PLSummary) bool {
 	if plSummary.CompanyName != "" &&
 		plSummary.PeriodStart != "" &&
 		plSummary.PeriodEnd != "" &&
@@ -954,30 +832,218 @@ func ValidatePLSummary(plSummary PLSummary) bool {
 	return false
 }
 
-func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyName string) {
-	var company internal.Company
-	id, uuidErr := uuid.NewUUID()
-	if uuidErr != nil {
-		fmt.Println("uuid create error")
-	}
-	company.ID = id.String()
-	company.EDINETCode = EDINETCode
-	company.Name = companyName
+func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyName string, isSummaryValid bool, isPLSummaryValid bool) {
+  foundItems, err := queryByName(dynamoClient, companyName, EDINETCode)
+  if err != nil {
+    fmt.Println(err)
+    return
+  }
 
-	item, err := attributevalue.MarshalMap(company)
-	if err != nil {
-		fmt.Println("MarshalMap err: ", err)
-	}
+  if len(foundItems) == 0 {
+    var company internal.Company
+    id, uuidErr := uuid.NewUUID()
+    if uuidErr != nil {
+      fmt.Println("uuid create error")
+      return
+    }
+    company.ID = id.String()
+    company.EDINETCode = EDINETCode
+    company.Name = companyName
+    if isSummaryValid {
+      company.BS = 1
+    }
+    if isPLSummaryValid {
+      company.PL = 1
+    }
 
-	input := &dynamodb.PutItemInput{
+    item, err := attributevalue.MarshalMap(company)
+    if err != nil {
+      fmt.Println("MarshalMap err: ", err)
+      return
+    }
+
+    input := &dynamodb.PutItemInput{
+      TableName: aws.String("compass_companies"),
+      Item:      item,
+    }
+    _, err = dynamoClient.PutItem(context.TODO(), input)
+    if err != nil {
+      fmt.Println("dynamoClient.PutItem err: ", err)
+      return
+    }
+    doneMsg := fmt.Sprintf("registered「%s」", companyName)
+    fmt.Println(doneMsg)
+  } else {
+    foundItem := foundItems[0]
+    if foundItem != nil {
+      var company internal.Company
+      // BS, PL フラグの設定
+      // fmt.Println("すでに登録された company: ", foundItem)
+      // company型に UnmarshalMap
+      err = attributevalue.UnmarshalMap(foundItem, &company)
+      if err != nil {
+        fmt.Println("attributevalue.UnmarshalMap err: ", err)
+        return
+      }
+      fmt.Println("==========================")
+      fmt.Println("登録済み companyID: ", company.ID)
+      fmt.Println("登録済み companyName: ", company.Name)
+      fmt.Println("登録済み BS: ", company.BS)
+      fmt.Println("登録済み PL: ", company.PL)
+
+      if company.BS == 0 && isSummaryValid {
+        // company.BS を 1 に更新
+        UpdateBS(dynamoClient, company.ID, 1)
+      }
+
+      if company.PL == 0 && isPLSummaryValid {
+        // company.PL を 1 に更新
+        UpdatePL(dynamoClient, company.ID, 1)
+      }
+    }
+  }
+}
+
+func queryByName(svc *dynamodb.Client, name string, edinetCode string) ([]map[string]types.AttributeValue, error) {
+	input := &dynamodb.QueryInput{
 		TableName: aws.String("compass_companies"),
-		Item:      item,
+		IndexName: aws.String("CompanyNameIndex"), // GSIを指定
+		KeyConditionExpression: aws.String("#n = :name AND #e = :edinetCode"),
+		ExpressionAttributeNames: map[string]string{
+			"#n": "name",       // `name`をエイリアス
+			"#e": "edinetCode", // `edinetCode`をエイリアス
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":name":       &types.AttributeValueMemberS{Value: name},
+			":edinetCode": &types.AttributeValueMemberS{Value: edinetCode},
+		},
 	}
-	// TODO: 同名の企業がある場合はDBに追加しない
-	result, err := dynamoClient.PutItem(context.TODO(), input)
+
+	// クエリの実行
+	result, err := svc.Query(context.TODO(), input)
 	if err != nil {
-		fmt.Println("dynamoClient.PutItem err: ", err)
+		return nil, err
 	}
-	doneMsg := fmt.Sprintf("「%s」result %v ⭐️", companyName, result)
-	fmt.Println(doneMsg)
+
+	return result.Items, nil
+}
+
+func UpdateBS(dynamoClient *dynamodb.Client, id string, bs int){
+  // 更新するカラムとその値の指定
+  updateInput := &dynamodb.UpdateItemInput{
+    TableName: aws.String("compass_companies"),
+    Key: map[string]types.AttributeValue{
+        "id": &types.AttributeValueMemberS{Value: id},
+    },
+    UpdateExpression: aws.String("SET #bs = :newBS"),
+    ExpressionAttributeNames: map[string]string{
+        "#bs": "bs", // "bs" カラムを指定
+    },
+    ExpressionAttributeValues: map[string]types.AttributeValue{
+        ":newBS": &types.AttributeValueMemberN{Value: strconv.Itoa(bs)},
+    },
+    ReturnValues: types.ReturnValueUpdatedNew, // 更新後の新しい値を返す
+  }
+
+  // 更新の実行
+  result, err := dynamoClient.UpdateItem(context.TODO(), updateInput)
+  if err != nil {
+      log.Fatalf("failed to update item, %v", err)
+  }
+
+  // 結果の表示
+  fmt.Printf("UpdateBS result: %+v\n", result)
+}
+
+func UpdatePL(dynamoClient *dynamodb.Client, id string, pl int){
+  // 更新するカラムとその値の指定
+  updateInput := &dynamodb.UpdateItemInput{
+    TableName: aws.String("compass_companies"),
+    Key: map[string]types.AttributeValue{
+        "id": &types.AttributeValueMemberS{Value: id},
+    },
+    UpdateExpression: aws.String("SET #pl = :newPL"),
+    ExpressionAttributeNames: map[string]string{
+        "#pl": "pl", // "pl" カラムを指定
+    },
+    ExpressionAttributeValues: map[string]types.AttributeValue{
+        ":newPL": &types.AttributeValueMemberN{Value: strconv.Itoa(pl)},
+    },
+    ReturnValues: types.ReturnValueUpdatedNew, // 更新後の新しい値を返す
+  }
+
+  // 更新の実行
+  result, err := dynamoClient.UpdateItem(context.TODO(), updateInput)
+  if err != nil {
+      log.Fatalf("failed to update item, %v", err)
+  }
+
+  // 結果の表示
+  fmt.Printf("UpdatePL result: %+v\n", result)
+}
+/*
+TODO: 自己資本比率、売上高営業利益率 => fundamentals
+json で入れる
+=> 外から参照渡しする
+{
+  period_start: 開始日 (両方)
+  period_end: 終了日 (両方)
+  sales: 売上高 (PL)
+  operating_profit: 営業利益 (PL)
+  liabilities: 負債 (BS)
+  netAssets: 純資産 (BS)
+}
+*/
+
+func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fundamental, EDINETCode string) {
+  region := os.Getenv("REGION")
+  sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+  if err != nil {
+    fmt.Println(err)
+    return
+  }
+  s3Client := s3.NewFromConfig(sdkConfig)
+  bucketName := os.Getenv("BUCKET_NAME")
+
+  fundamentalBody, err := json.Marshal(fundamental)
+  if err != nil {
+    fmt.Println("fundamental json.Marshal err: ", err)
+    return
+  }
+  // ファイル名
+  // E00748-S100PZ48-BS-from-2020-11-01-to-2021-10-31.html
+  fundamentalsFileName := fmt.Sprintf("%s-fundamentals-from-%s-to-%s.json", EDINETCode, fundamental.PeriodStart, fundamental.PeriodEnd)
+  key := fmt.Sprintf("%s/Fundamentals/%s", EDINETCode, fundamentalsFileName)
+  // ファイルの存在チェック
+  existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+    Bucket: aws.String(bucketName),
+    Key:    aws.String(key),
+  })
+  if existsFile == nil {
+    _, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+      Bucket:      aws.String(bucketName),
+      Key:         aws.String(key),
+      Body:        strings.NewReader(string(fundamentalBody)),
+      ContentType: aws.String("application/json"),
+    })
+    if err != nil {
+      fmt.Println(err)
+      return
+    }
+    uploadDoneMsg := fmt.Sprintf("Successfully uploaded fundamentals (CompanyName: %s, FileName: %s)", fundamental.CompanyName, key)
+    fmt.Println(uploadDoneMsg)
+  }
+}
+
+func ValidateFundamentals(fundamental internal.Fundamental) bool {
+	if fundamental.CompanyName != "" &&
+		fundamental.PeriodStart != "" &&
+		fundamental.PeriodEnd != "" &&
+		fundamental.Sales != 0 &&
+    fundamental.OperatingProfit != 0 &&
+    fundamental.Liabilities != 0 &&
+    fundamental.NetAssets != 0 {
+		return true
+	}
+	return false
 }

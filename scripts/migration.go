@@ -22,9 +22,9 @@ var Users = []internal.User{
 }
 
 var Companies = []internal.Company{
-	{Name: "ヨネックス株式会社", Established: "1958/06", Capital: "4766"},
-	{Name: "美津濃株式会社", Established: "1906/04", Capital: "26137"},
-	{Name: "株式会社ユニクロ / UNIQLO CO., LTD.", Established: "1974/09/02"},
+	{Name: "ヨネックス株式会社"},
+	{Name: "美津濃株式会社"},
+	{Name: "株式会社ユニクロ / UNIQLO CO., LTD."},
 }
 
 var Titles = []internal.Title{
