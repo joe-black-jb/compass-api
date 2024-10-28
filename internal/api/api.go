@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,13 +53,46 @@ func GetCompanies(c *gin.Context) {
 	// pagination 用
 	var lastEvaluatedKey map[string]types.AttributeValue
 
-	for {
+	limit := c.Query("limit")
+	if limit == "" {
+		for {
+			scanInput := &dynamodb.ScanInput{
+				TableName: aws.String("compass_companies"),
+				Limit:     aws.Int32(50),
+			}
+			if lastEvaluatedKey != nil {
+				scanInput.ExclusiveStartKey = lastEvaluatedKey
+			}
+			result, err := dynamoClient.Scan(context.TODO(), scanInput)
+			if err != nil {
+				fmt.Println("scan err: ", err)
+				c.JSON(http.StatusInternalServerError, err)
+			}
+
+			var batch []internal.Company
+			// 取得したアイテムを Company 構造体に変換
+			err = attributevalue.UnmarshalListOfMaps(result.Items, &batch)
+			if err != nil {
+				fmt.Println("unMarshal err: ", err)
+				c.JSON(http.StatusInternalServerError, err)
+			}
+
+			companies = append(companies, batch...)
+
+			if result.LastEvaluatedKey == nil {
+				break
+			}
+			lastEvaluatedKey = result.LastEvaluatedKey
+		}
+	} else {
+		limitInt, err := strconv.Atoi(limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, err)
+		}
+		limitInt32 := int32(limitInt)
 		scanInput := &dynamodb.ScanInput{
 			TableName: aws.String("compass_companies"),
-			Limit:     aws.Int32(50),
-		}
-		if lastEvaluatedKey != nil {
-			scanInput.ExclusiveStartKey = lastEvaluatedKey
+			Limit:     aws.Int32(limitInt32),
 		}
 		result, err := dynamoClient.Scan(context.TODO(), scanInput)
 		if err != nil {
@@ -73,13 +107,7 @@ func GetCompanies(c *gin.Context) {
 			fmt.Println("unMarshal err: ", err)
 			c.JSON(http.StatusInternalServerError, err)
 		}
-
 		companies = append(companies, batch...)
-
-		if result.LastEvaluatedKey == nil {
-			break
-		}
-		lastEvaluatedKey = result.LastEvaluatedKey
 	}
 
 	// // companies のスライスを JSON にシリアライズ
@@ -122,6 +150,18 @@ func GetCompany(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, err)
 	}
 	c.IndentedJSON(http.StatusOK, company)
+}
+
+func SearchCompaniesByName(c *gin.Context) {
+  companyName := c.Query("companyName")
+  if companyName == "" {
+    c.IndentedJSON(http.StatusInternalServerError, "企業名を指定してください")
+  }
+  companies, err := ScanCompaniesByName(dynamoClient, "compass_companies", companyName)
+  if err != nil {
+    c.IndentedJSON(http.StatusInternalServerError, err)
+  }
+  c.IndentedJSON(http.StatusOK, companies)
 }
 
 func GetTitles(c *gin.Context) {
@@ -575,7 +615,8 @@ func GetFundamentals(c *gin.Context) {
 	// オブジェクト一覧を取得
 	result, err := s3Client.ListObjectsV2(context.TODO(), input)
 	if err != nil {
-		log.Fatalf("failed to list objects, %v", err)
+		// log.Fatalf("failed to list objects, %v", err)
+		fmt.Println("failed to list fundamentals objects: ", err)
 	}
 
 	// var keys []string
