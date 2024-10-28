@@ -122,6 +122,7 @@ func Router() {
 	router.POST("/login", Login)
 	router.GET("/reports", GetReports)
 	router.GET("/fundamentals", GetFundamentals)
+	router.GET("/search/companies", SearchCompaniesByName)
 
 	// 認証が必要なエンドポイント
 	auth := router.Group("/")
