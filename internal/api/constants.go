@@ -12,6 +12,7 @@ import "regexp"
 // 数字のみのパターン (※１ などを除外するためのパターン)
 // 数字の前に※がないことを条件に加える
 var OnlyNumRe *regexp.Regexp = regexp.MustCompile(`\d+`)
+
 // var OnlyNumRe *regexp.Regexp = regexp.MustCompile(`(?!※)\d+`)
 
 // ※1 などを除外するためのパターン

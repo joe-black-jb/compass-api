@@ -87,8 +87,11 @@ func ConvertUpdateTitleBody(reqBody *internal.CreateTitleBody) (errors []string,
 
 /*
 正常系
+
 	10,897,603
+
 異常系
+
 	※1 10,897,603
 	※1,※2 10,897,603
 */
@@ -127,8 +130,8 @@ func ConvertTextValue2IntValue(text string) (int, error) {
 
 func QueryByName(svc *dynamodb.Client, tableName string, companyName string, edinetCode string) ([]map[string]types.AttributeValue, error) {
 	input := &dynamodb.QueryInput{
-		TableName: aws.String(tableName),
-		IndexName: aws.String("CompanyNameIndex"), // GSIを指定
+		TableName:              aws.String(tableName),
+		IndexName:              aws.String("CompanyNameIndex"), // GSIを指定
 		KeyConditionExpression: aws.String("#n = :name AND #e = :edinetCode"),
 		ExpressionAttributeNames: map[string]string{
 			"#n": "name",       // `name`をエイリアス

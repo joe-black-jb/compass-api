@@ -16,13 +16,13 @@ type User struct {
 }
 
 type Company struct {
-	ID            string    `json:"id" dynamodbav:"id"`
-	CreatedAt     time.Time `json:"createdAt" dynamodbav:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
-	Name          string    `json:"name" dynamodbav:"name"`
-	EDINETCode    string    `json:"edinetCode" dynamodbav:"edinetCode"`
-	BS            int       `json:"bs" dynamodbav:"bs"`
-	PL            int       `json:"pl" dynamodbav:"pl"`
+	ID         string    `json:"id" dynamodbav:"id"`
+	CreatedAt  time.Time `json:"createdAt" dynamodbav:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
+	Name       string    `json:"name" dynamodbav:"name"`
+	EDINETCode string    `json:"edinetCode" dynamodbav:"edinetCode"`
+	BS         int       `json:"bs" dynamodbav:"bs"`
+	PL         int       `json:"pl" dynamodbav:"pl"`
 }
 
 type Title struct {
@@ -232,7 +232,7 @@ type Summary struct {
 	PeriodStart               string     `json:"period_start"`
 	PeriodEnd                 string     `json:"period_end"`
 	UnitString                string     `json:"unit_string"`                  // 単位
-  CurrentAssets             TitleValue `json:"current_assets"`               // 流動資産
+	CurrentAssets             TitleValue `json:"current_assets"`               // 流動資産
 	TangibleAssets            TitleValue `json:"tangible_assets"`              // 有形固定資産
 	IntangibleAssets          TitleValue `json:"intangible_assets"`            // 無形固定資産
 	InvestmentsAndOtherAssets TitleValue `json:"investments_and_other_assets"` // 投資その他の資産
@@ -254,25 +254,24 @@ type PLSummary struct {
 }
 
 type Fundamental struct {
-	CompanyName string `json:"company_name"`
-	PeriodStart string `json:"period_start"`
-  PeriodEnd string `json:"period_end"`
-  Sales int `json:"sales"`
-  OperatingProfit int `json:"operating_profit"`
-  Liabilities int `json:"liabilities"`
-  NetAssets int `json:"net_assets"`
+	CompanyName     string `json:"company_name"`
+	PeriodStart     string `json:"period_start"`
+	PeriodEnd       string `json:"period_end"`
+	Sales           int    `json:"sales"`
+	OperatingProfit int    `json:"operating_profit"`
+	Liabilities     int    `json:"liabilities"`
+	NetAssets       int    `json:"net_assets"`
 }
 
 type CFSummary struct {
-	CompanyName string `json:"company_name"`
-	PeriodStart string `json:"period_start"`
-  PeriodEnd string `json:"period_end"`
-	UnitString      string     `json:"unit_string"`
+	CompanyName string     `json:"company_name"`
+	PeriodStart string     `json:"period_start"`
+	PeriodEnd   string     `json:"period_end"`
+	UnitString  string     `json:"unit_string"`
 	OperatingCF TitleValue `json:"operating_cf"` // 営業活動によるキャッシュ・フロー
 	InvestingCF TitleValue `json:"investing_cf"` // 投資活動によるキャッシュ・フロー
 	FinancingCF TitleValue `json:"financing_cf"` // 財務活動によるキャッシュ・フロー
 	// FreeCF TitleValue `json:"free_cf"` // フリーCF
 	StartCash TitleValue `json:"start_cash"` // 現金及び現金同等物の期首残高
-	EndCash TitleValue `json:"end_cash"` // 現金及び現金同等物の期末残高
+	EndCash   TitleValue `json:"end_cash"`   // 現金及び現金同等物の期末残高
 }
-

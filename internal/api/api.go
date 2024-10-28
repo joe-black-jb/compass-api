@@ -153,15 +153,15 @@ func GetCompany(c *gin.Context) {
 }
 
 func SearchCompaniesByName(c *gin.Context) {
-  companyName := c.Query("companyName")
-  if companyName == "" {
-    c.IndentedJSON(http.StatusInternalServerError, "企業名を指定してください")
-  }
-  companies, err := ScanCompaniesByName(dynamoClient, "compass_companies", companyName)
-  if err != nil {
-    c.IndentedJSON(http.StatusInternalServerError, err)
-  }
-  c.IndentedJSON(http.StatusOK, companies)
+	companyName := c.Query("companyName")
+	if companyName == "" {
+		c.IndentedJSON(http.StatusInternalServerError, "企業名を指定してください")
+	}
+	companies, err := ScanCompaniesByName(dynamoClient, "compass_companies", companyName)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, err)
+	}
+	c.IndentedJSON(http.StatusOK, companies)
 }
 
 func GetTitles(c *gin.Context) {
@@ -545,28 +545,28 @@ func GetReports(c *gin.Context) {
 	// .htmlファイルだけをフィルタリング
 	for _, item := range result.Contents {
 		key := *item.Key
-    if extension == "html" {
-      if strings.HasSuffix(key, ".html") {
-        splitFileName := strings.Split(key, "/")
-        if len(splitFileName) >= 2 {
-          fileType := splitFileName[1] // BS or PL
-          if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
-            keys = append(keys, key)
-          }
-        }
-      }
-    }
-    if extension == "json" {
-      if strings.HasSuffix(key, ".json") {
-        splitFileName := strings.Split(key, "/")
-        if len(splitFileName) >= 2 {
-          fileType := splitFileName[1] // BS or PL
-          if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
-            keys = append(keys, key)
-          }
-        }
-      }
-    }
+		if extension == "html" {
+			if strings.HasSuffix(key, ".html") {
+				splitFileName := strings.Split(key, "/")
+				if len(splitFileName) >= 2 {
+					fileType := splitFileName[1] // BS or PL
+					if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
+						keys = append(keys, key)
+					}
+				}
+			}
+		}
+		if extension == "json" {
+			if strings.HasSuffix(key, ".json") {
+				splitFileName := strings.Split(key, "/")
+				if len(splitFileName) >= 2 {
+					fileType := splitFileName[1] // BS or PL
+					if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
+						keys = append(keys, key)
+					}
+				}
+			}
+		}
 	}
 	// fmt.Println("取得対象ファイル: ", keys)
 
@@ -626,7 +626,7 @@ func GetFundamentals(c *gin.Context) {
 		var fundamental internal.Fundamental
 		key := *item.Key
 		fmt.Println("getObject key: ", key)
-    // key を指定し json ファイルを取得
+		// key を指定し json ファイルを取得
 		result, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
 			Bucket: aws.String(bucketName),
 			Key:    aws.String(key),
