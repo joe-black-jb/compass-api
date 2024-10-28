@@ -262,3 +262,17 @@ type Fundamental struct {
   Liabilities int `json:"liabilities"`
   NetAssets int `json:"net_assets"`
 }
+
+type CFSummary struct {
+	CompanyName string `json:"company_name"`
+	PeriodStart string `json:"period_start"`
+  PeriodEnd string `json:"period_end"`
+	UnitString      string     `json:"unit_string"`
+	OperatingCF TitleValue `json:"operating_cf"` // 営業活動によるキャッシュ・フロー
+	InvestingCF TitleValue `json:"investing_cf"` // 投資活動によるキャッシュ・フロー
+	FinancingCF TitleValue `json:"financing_cf"` // 財務活動によるキャッシュ・フロー
+	// FreeCF TitleValue `json:"free_cf"` // フリーCF
+	StartCash TitleValue `json:"start_cash"` // 現金及び現金同等物の期首残高
+	EndCash TitleValue `json:"end_cash"` // 現金及び現金同等物の期末残高
+}
+
