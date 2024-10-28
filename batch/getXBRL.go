@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -26,12 +28,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/joe-black-jb/compass-api/internal"
+	"github.com/joe-black-jb/compass-api/internal/api"
 	"github.com/joho/godotenv"
 )
 
 var EDINETAPIKey string
 
 var dynamoClient *dynamodb.Client
+
+var tableName string
 
 func init() {
 	err := godotenv.Load()
@@ -51,9 +56,17 @@ func init() {
 		return
 	}
 	dynamoClient = dynamodb.NewFromConfig(cfg)
+  tableName = os.Getenv("DYNAMO_TABLE_NAME")
 }
 
+// TODO: CF計算書の登録、取得処理
+
 func main() {
+  start := time.Now()
+
+  if tableName == "" {
+    log.Fatal("テーブル名が設定されていません")
+  }
 	reports, err := GetReports()
 	fmt.Println("len(reports): ", len(reports))
 	if err != nil {
@@ -61,7 +74,9 @@ func main() {
 		return
 	}
 
+  var wg sync.WaitGroup
 	for _, report := range reports {
+    wg.Add(1)
 		EDINETCode := report.EdinetCode
 		companyName := report.FilerName
 		docID := report.DocId
@@ -102,16 +117,13 @@ func main() {
       Liabilities: 0,
       NetAssets: 0,
     }
-		RegisterReport(dynamoClient, EDINETCode, docID, companyName, periodStart, periodEnd, &fundamental)
-    fmt.Println("ファンダメンタル ⭐️: ", fundamental)
-    // ファンダメンタル用jsonの送信
-    if ValidateFundamentals(fundamental) {
-      // E05492 フィンテック
-      RegisterFundamental(dynamoClient, fundamental, EDINETCode)
-    }
+		go RegisterReport(dynamoClient, EDINETCode, docID, companyName, periodStart, periodEnd, &fundamental, &wg)
+    // fmt.Println("ファンダメンタル ⭐️: ", fundamental)
 	}
+  wg.Wait()
 
 	fmt.Println("All processes done ⭐️")
+  fmt.Println("所要時間: ",  time.Since(start))
 }
 
 func unzip(source, destination string) (string, error) {
@@ -166,10 +178,13 @@ func unzip(source, destination string) (string, error) {
 			}
 
 			XBRLFilepath = f.Name
-
-			// TODO: ディレクトリを削除する
 		}
 	}
+  // zipファイルを削除
+  err = os.RemoveAll(source)
+  if err != nil {
+    fmt.Println("zip ファイル削除エラー: ", err)
+  }
 	return XBRLFilepath, nil
 }
 
@@ -184,8 +199,20 @@ func GetReports() ([]internal.Result, error) {
 	}
 
 	var results []internal.Result
-	date := time.Date(2023, time.January, 1, 1, 0, 0, 0, loc)
-	for i := 0; i < 20; i++ {
+  // 2022-01-01 ~ 2024-09-30 まで完了
+  /*
+  【末日】
+    Jan: 31   Feb: 28   Mar: 31   Apr: 30   May: 31   Jun: 30
+    Jul: 31   Aug: 31   Sep: 30   Oct: 31   Nov: 30   Dec: 31
+  */
+  // 集計開始日付
+	date := time.Date(2024, time.February, 1, 1, 0, 0, 0, loc)
+  // 集計終了日付
+  endDate := time.Date(2024, time.February, 31, 1, 0, 0, 0, loc)
+  // now := time.Now()
+	for date.Before(endDate) || date.Equal(endDate) {
+    fmt.Println(fmt.Sprintf("%s の処理を開始します⭐️", date.Format("2006-01-02")))
+
 		var statement internal.Report
 
 		dateStr := date.Format("2006-01-02")
@@ -222,17 +249,19 @@ func GetReports() ([]internal.Result, error) {
 	return results, nil
 }
 
-func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID string, companyName string, periodStart string, periodEnd string, fundamental *internal.Fundamental) {
+func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID string, companyName string, periodStart string, periodEnd string, fundamental *internal.Fundamental, wg *sync.WaitGroup) {
+  defer wg.Done()
 	BSFileNamePattern := fmt.Sprintf("%s-%s-BS-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
 	PLFileNamePattern := fmt.Sprintf("%s-%s-PL-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
 
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 300 * time.Second,
 	}
 	url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents/%s?type=1&Subscription-Key=%s", docID, EDINETAPIKey)
 	resp, err := client.Get(url)
 	if err != nil {
 		fmt.Println("http get error : ", err)
+    return
 	}
 	defer resp.Body.Close()
 
@@ -307,6 +336,33 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	soloPLPattern := `(?s)<jpcrp_cor:StatementOfIncomeTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:StatementOfIncomeTextBlock>`
 	soloPLRe := regexp.MustCompile(soloPLPattern)
 	soloPLMatches := soloPLRe.FindString(string(body))
+
+  //////////// CF 計算書 ////////////
+  // 【連結キャッシュ・フロー計算書】
+  consolidatedCFPattern := `(?s)<jpcrp_cor:ConsolidatedStatementOfCashFlowsTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:ConsolidatedStatementOfCashFlowsTextBlock>`
+  consolidatedCFRe := regexp.MustCompile(consolidatedCFPattern)
+  consolidatedCFMattches := consolidatedCFRe.FindString(string(body))
+  // fmt.Println(fmt.Sprintf("「%s」の連結CF\n%s", companyName, consolidatedCFMattches))
+  fmt.Println(fmt.Sprintf("「%s」の連結CFはありますか❓: %v", companyName, consolidatedCFMattches != ""))
+  // 【連結キャッシュ・フロー計算書 (IFRS)】
+  consolidatedCFIFRSPattern := `(?s)<jpigp_cor:ConsolidatedStatementOfCashFlowsIFRSTextBlock contextRef="CurrentYearDuration">(.*?)</jpigp_cor:ConsolidatedStatementOfCashFlowsIFRSTextBlock>`
+  consolidatedCFIFRSRe := regexp.MustCompile(consolidatedCFIFRSPattern)
+  consolidatedCFIFRSMattches := consolidatedCFIFRSRe.FindString(string(body))
+  // fmt.Println(fmt.Sprintf("「%s」の連結CF (IFRS)\n%s", companyName, consolidatedCFIFRSMattches))
+  fmt.Println(fmt.Sprintf("「%s」の連結CF (IFRS) はありますか❓: %v", companyName, consolidatedCFIFRSMattches != ""))
+
+  // 【キャッシュ・フロー計算書】
+  soloCFPattern := `(?s)<jpcrp_cor:StatementOfCashFlowsTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:StatementOfCashFlowsTextBlock>`
+  soloCFRe := regexp.MustCompile(soloCFPattern)
+  soloCFMattches := soloCFRe.FindString(string(body))
+  fmt.Println(fmt.Sprintf("「%s」のCFはありますか❓: %v", companyName, soloCFMattches != ""))
+
+  // 【キャッシュ・フロー計算書 (IFRS)】
+  soloCFIFRSPattern := `(?s)<jpcrp_cor:StatementOfCashFlowsIFRSTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:StatementOfCashFlowsIFRSTextBlock>`
+  soloCFIFRSRe := regexp.MustCompile(soloCFIFRSPattern)
+  soloCFIFRSMattches := soloCFIFRSRe.FindString(string(body))
+  fmt.Println(fmt.Sprintf("「%s」のCF (IFRS)はありますか❓: %v", companyName, soloCFIFRSMattches != ""))
+  ////////////////////////////////////
 
 	// エスケープ文字をデコード
 	// 貸借対照表データの整形
@@ -412,6 +468,7 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	summary.PeriodStart = periodStart
 	summary.PeriodEnd = periodEnd
 	UpdateSummary(doc, &summary, fundamental)
+  isSummaryValid := ValidateSummary(summary)
 
 	// 損益計算書データ
 	var plSummary internal.PLSummary
@@ -419,19 +476,41 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	plSummary.PeriodStart = periodStart
 	plSummary.PeriodEnd = periodEnd
 	UpdatePLSummary(plDoc, &plSummary, fundamental)
+  isPLSummaryValid := ValidatePLSummary(plSummary)
 
-	isSummaryValid := ValidateSummary(summary)
+  // CF計算書データ
+  cfFileNamePattern := fmt.Sprintf("%s-%s-CF-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
+  cfDoc, err := ParseCF(cfFileNamePattern, string(body), consolidatedCFMattches, consolidatedCFIFRSMattches, soloCFMattches, soloCFIFRSMattches)
+  if err != nil {
+    fmt.Println("ParseCF err: ", err)
+    return
+  }
+  var cfSummary internal.CFSummary
+  cfSummary.CompanyName = companyName
+	cfSummary.PeriodStart = periodStart
+	cfSummary.PeriodEnd = periodEnd
+  UpdateCFSummary(cfDoc, &cfSummary)
+  // TODO: CFバリデーション後処理
+  // isCFSummaryValid := ValidateCFSummary(cfSummary)
 
   // fmt.Println("summary ⭐️: ", summary)
 
 	// 貸借対照表バリデーション後
+  bsJsonName := fmt.Sprintf("%s.json", BSFileNamePattern)
+	bsJsonPath := fmt.Sprintf("json/%s", bsJsonName)
 	if isSummaryValid {
     // RegisterCompany
     RegisterCompany(dynamoClient, EDINETCode, companyName, isSummaryValid, false)
-    // fmt.Println("有効な BS です❗️")
-		jsonName := fmt.Sprintf("%s.json", BSFileNamePattern)
-		jsonPath := fmt.Sprintf("json/%s", jsonName)
-		jsonFile, err := os.Create(jsonPath)
+    // fmt.Println("有効な BS です🎾")
+
+    // ディレクトリが存在しない場合は作成
+    err = os.MkdirAll("json", os.ModePerm)
+    if err != nil {
+      fmt.Println("Error creating directory:", err)
+      return
+    }
+
+		jsonFile, err := os.Create(bsJsonPath)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -459,17 +538,17 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 		}
 		s3Client := s3.NewFromConfig(sdkConfig)
 		bucketName := os.Getenv("BUCKET_NAME")
-		jsonFileOpen, err := os.Open(jsonPath)
+		jsonFileOpen, err := os.Open(bsJsonPath)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 		defer jsonFileOpen.Close()
 
-		splitJsonName := strings.Split(jsonName, "-")
+		splitJsonName := strings.Split(bsJsonName, "-")
 		if len(splitJsonName) >= 3 {
 			reportType := splitJsonName[2] // BS or PL
-			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, jsonName)
+			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, bsJsonName)
 
 			// ファイルの存在チェック
 			existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
@@ -487,7 +566,7 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 					fmt.Println(err)
 					return
 				}
-				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, key)
+				uploadDoneMsg := fmt.Sprintf("「%s」の貸借対照表JSONを登録しました ⭕️ (ファイル名: %s)", companyName, key)
 				fmt.Println(uploadDoneMsg)
 			}
 		}
@@ -522,25 +601,29 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 					fmt.Println(err)
 					return
 				}
-				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, bsHTMLKey)
+				uploadDoneMsg := fmt.Sprintf("「%s」の貸借対照表HTMLを登録しました ⭕️ (ファイル名: %s)", companyName, bsHTMLKey)
 				fmt.Println(uploadDoneMsg)
 			}
 		}
+    // validSummaryMsg := fmt.Sprintf("有効な BS Summary (CompanyName: %s, EDINETCode: %s, docID: %s, summary: %v)", companyName, EDINETCode, docID, summary)
+		// fmt.Println(validSummaryMsg)
 	} else {
-		invalidSummaryMsg := fmt.Sprintf("Invalid BS Summary (CompanyName: %s, docID: %s)", companyName, docID)
+		// invalidSummaryMsg := fmt.Sprintf("Invalid BS Summary (CompanyName: %s, EDINETCode: %s, docID: %s, summary: %v)", companyName, EDINETCode, docID, summary)
+		invalidSummaryJson, err := json.MarshalIndent(summary, "", "  ")
+    if err != nil {
+      fmt.Println("BSデータの json.MarshalIndent エラー❗️: ", err)
+    }
+    invalidSummaryMsg := fmt.Sprintf("「%s」の BS データが不正です ❌ (EDINETCode: %s, docID: %s, summaryJSON:\n%v)", companyName, EDINETCode, docID, string(invalidSummaryJson))
 		fmt.Println(invalidSummaryMsg)
 	}
 
 	// 損益計算書バリデーション後
-	isPLSummaryValid := ValidatePLSummary(plSummary)
-
+  plJsonName := fmt.Sprintf("%s.json", PLFileNamePattern)
+  plJsonPath := fmt.Sprintf("json/%s", plJsonName)
 	if isPLSummaryValid {
-    // fmt.Println("有効な PL です❗️")
     // RegisterCompany
     RegisterCompany(dynamoClient, EDINETCode, companyName, false, isPLSummaryValid)
-		jsonName := fmt.Sprintf("%s.json", PLFileNamePattern)
-		jsonPath := fmt.Sprintf("json/%s", jsonName)
-		jsonFile, err := os.Create(jsonPath)
+		jsonFile, err := os.Create(plJsonPath)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -568,15 +651,15 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 		}
 		s3Client := s3.NewFromConfig(sdkConfig)
 		bucketName := os.Getenv("BUCKET_NAME")
-		jsonFileOpen, err := os.Open(jsonPath)
+		jsonFileOpen, err := os.Open(plJsonPath)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		splitJsonName := strings.Split(jsonName, "-")
+		splitJsonName := strings.Split(plJsonName, "-")
 		if len(splitJsonName) >= 3 {
 			reportType := splitJsonName[2] // BS or PL
-			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, jsonName)
+			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, plJsonName)
 
 			// ファイルの存在チェック
 			existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
@@ -594,7 +677,7 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 					fmt.Println(err)
 					return
 				}
-				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, key)
+				uploadDoneMsg := fmt.Sprintf("「%s」の損益計算書JSONを登録しました ⭕️ (ファイル名: %s)", companyName, key)
 				fmt.Println(uploadDoneMsg)
 			}
 		}
@@ -628,15 +711,55 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 					fmt.Println(err)
 					return
 				}
-				uploadDoneMsg := fmt.Sprintf("Successfully uploaded (CompanyName: %s, FileName: %s)", companyName, plHTMLKey)
+				uploadDoneMsg := fmt.Sprintf("「%s」の損益計算書HTMLを登録しました ⭕️ (ファイル名: %s)", companyName, plHTMLKey)
 				fmt.Println(uploadDoneMsg)
 			}
 		}
-
 	} else {
-		invalidSummaryMsg := fmt.Sprintf("Invalid PL Summary (CompanyName: %s, docID: %s)", companyName, docID)
+    invalidPLSummaryJson, err := json.MarshalIndent(plSummary, "", "  ")
+    if err != nil {
+      fmt.Println("PLデータの json.MarshalIndent エラー❗️: ", err)
+    }
+    invalidSummaryMsg := fmt.Sprintf("「%s」の PL データが不正です ❌ (EDINETCode: %s, docID: %s, summaryJSON:\n%s)", companyName, EDINETCode, docID, string(invalidPLSummaryJson))
 		fmt.Println(invalidSummaryMsg)
 	}
+
+  // TODO: CF計算書バリデーション後
+  /*
+  ・CF HTML の送信
+  ・CF JSON の送信
+  */
+  // cfJsonName := fmt.Sprintf("%s.json", cfFileNamePattern)
+
+  // HTML ファイルの削除
+  err = os.RemoveAll(bsHTMLFilePath)
+  if err != nil {
+    fmt.Println("BS HTML ファイル削除エラー: ", err)
+  }
+  err = os.RemoveAll(plHTMLFilePath)
+  if err != nil {
+    fmt.Println("PL HTML ファイル削除エラー: ", err)
+  }
+  // JSON ファイルの削除
+  err = os.RemoveAll(bsJsonPath)
+  if err != nil {
+    fmt.Println("PL HTML ファイル削除エラー: ", err)
+  }
+  err = os.RemoveAll(plJsonPath)
+  if err != nil {
+    fmt.Println("PL HTML ファイル削除エラー: ", err)
+  }
+  // XBRL ファイルの削除 parentPath
+  xbrlDir := filepath.Join("XBRL", docID)
+  err = os.RemoveAll(xbrlDir)
+  if err != nil {
+    fmt.Println("XBRL ディレクトリ削除エラー: ", err)
+  }
+
+  // ファンダメンタル用jsonの送信
+  if ValidateFundamentals(*fundamental) {
+    RegisterFundamental(dynamoClient, *fundamental, EDINETCode)
+  }
 }
 
 func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental *internal.Fundamental) {
@@ -652,51 +775,63 @@ func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental
 		}
 		if len(titleTexts) >= 3 {
 			titleName := titleTexts[0]
-			previous := titleTexts[1]
-			previousStr := strings.ReplaceAll(previous, ",", "")
-			previousInt, prevErr := strconv.Atoi(previousStr)
-			current := titleTexts[2]
-			currentStr := strings.ReplaceAll(current, ",", "")
-			currentInt, currErr := strconv.Atoi(currentStr)
 
-			if prevErr == nil && currErr == nil {
-				switch titleName {
-        case "流動資産合計":
-          summary.CurrentAssets.Previous = previousInt
-					summary.CurrentAssets.Current = currentInt
-				case "有形固定資産合計":
-					summary.TangibleAssets.Previous = previousInt
-					summary.TangibleAssets.Current = currentInt
-				case "無形固定資産合計":
-					summary.IntangibleAssets.Previous = previousInt
-					summary.IntangibleAssets.Current = currentInt
-				case "投資その他の資産合計":
-					summary.InvestmentsAndOtherAssets.Previous = previousInt
-					summary.InvestmentsAndOtherAssets.Current = currentInt
-				case "流動負債合計":
-					summary.CurrentLiabilities.Previous = previousInt
-					summary.CurrentLiabilities.Current = currentInt
-				case "固定負債合計":
-					summary.FixedLiabilities.Previous = previousInt
-					summary.FixedLiabilities.Current = currentInt
-				case "純資産合計":
-					summary.NetAssets.Previous = previousInt
-					summary.NetAssets.Current = currentInt
-          // fundamental
-          fundamental.NetAssets = currentInt
-				case "負債合計":
-          // fundamental
-          fundamental.Liabilities = currentInt
-				}
-			}
-		}
-		// fmt.Println("titleTexts ❗️: ", titleTexts)
-		// fmt.Println("len(splitTdTexts) ❗️: ", len(splitTdTexts))
-		// fmt.Println(`strings.Contains(titleTexts[0], "単位：") ❗️: `, strings.Contains(titleTexts[0], "単位："))
+      // 前期
+			previousText := titleTexts[1]
+			previousIntValue, err := api.ConvertTextValue2IntValue(previousText)
+      if err != nil {
+        return
+      }
+
+      // 当期
+			currentText := titleTexts[2]
+			currentIntValue, err := api.ConvertTextValue2IntValue(currentText)
+      if err != nil {
+        return
+      }
+
+      if strings.Contains(titleName, "流動資産合計") {
+        summary.CurrentAssets.Previous = previousIntValue
+        summary.CurrentAssets.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "有形固定資産合計") {
+        summary.TangibleAssets.Previous = previousIntValue
+        summary.TangibleAssets.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "無形固定資産合計") {
+        summary.IntangibleAssets.Previous = previousIntValue
+        summary.IntangibleAssets.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "投資その他の資産合計") {
+        summary.InvestmentsAndOtherAssets.Previous = previousIntValue
+        summary.InvestmentsAndOtherAssets.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "流動負債合計") {
+        summary.CurrentLiabilities.Previous = previousIntValue
+        summary.CurrentLiabilities.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "固定負債合計") {
+        summary.FixedLiabilities.Previous = previousIntValue
+        summary.FixedLiabilities.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "純資産合計") {
+        summary.NetAssets.Previous = previousIntValue
+        summary.NetAssets.Current = currentIntValue
+        // fundamental
+        fundamental.NetAssets = currentIntValue
+      }
+      if strings.Contains(titleName, "負債合計") {
+        // fundamental
+        fundamental.Liabilities = currentIntValue
+      }
+    }
+
 		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
 			baseStr := splitTdTexts[0]
 			baseStr = strings.ReplaceAll(baseStr, "(", "")
+			baseStr = strings.ReplaceAll(baseStr, "（", "")
 			baseStr = strings.ReplaceAll(baseStr, ")", "")
+			baseStr = strings.ReplaceAll(baseStr, "）", "")
 			splitUnitStrs := strings.Split(baseStr, "：")
 			if len(splitUnitStrs) >= 2 {
 				summary.UnitString = splitUnitStrs[1]
@@ -717,69 +852,56 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, funda
 			}
 		}
 		if len(titleTexts) >= 3 {
-			isPreviousMinus := false
-			isCurrentMinus := false
 			titleName := titleTexts[0]
 
-			// 数字のみのパターン
-			re := regexp.MustCompile(`\d+`)
-
-			// 前期
-			previous := titleTexts[1]
-			previousStr := strings.ReplaceAll(previous, ",", "")
-			if strings.Contains(previousStr, "△") {
-				isPreviousMinus = true
-			}
-			previousMatch := re.FindString(previousStr)
-			// △ で始まっていたらマイナスにする
-			if isPreviousMinus {
-				previousMatch = "-" + previousMatch
-			}
-			previousInt, prevErr := strconv.Atoi(previousMatch)
+      // 前期
+			previousText := titleTexts[1]
+      previousIntValue, err := api.ConvertTextValue2IntValue(previousText)
+      if err != nil {
+        // fmt.Println("previous value convert error: ", err)
+        return
+      }
 
 			// 当期
-			current := titleTexts[2]
-			currentStr := strings.ReplaceAll(current, ",", "")
-			if strings.Contains(currentStr, "△") {
-				isCurrentMinus = true
-			}
-			currentMatch := re.FindString(currentStr)
-			// △ で始まっていたらマイナスにする
-			if isCurrentMinus {
-				currentMatch = "-" + currentMatch
-			}
-			currentInt, currErr := strconv.Atoi(currentMatch)
+			currentText := titleTexts[2]
+			currentIntValue, err := api.ConvertTextValue2IntValue(currentText)
+      if err != nil {
+        // fmt.Println("current value convert error: ", err)
+        return
+      }
 
-			// fmt.Println(fmt.Sprintf("===== %s =====", titleName))
-			// fmt.Println("前期: ", previousInt)
-			// fmt.Println("後期: ", currentInt)
-
-			if prevErr == nil && currErr == nil {
-				switch titleName {
-				case "売上原価":
-					plSummary.CostOfGoodsSold.Previous = previousInt
-					plSummary.CostOfGoodsSold.Current = currentInt
-				case "販売費及び一般管理費":
-					plSummary.SGAndA.Previous = previousInt
-					plSummary.SGAndA.Current = currentInt
-				case "売上高":
-					plSummary.Sales.Previous = previousInt
-					plSummary.Sales.Current = currentInt
-          // fundamental
-          fundamental.Sales = currentInt
-					// case "営業利益":
-					// 	plSummary.OperatingProfit.Previous = previousInt
-					// 	plSummary.OperatingProfit.Current = currentInt
-					// case "営業損失":
-					// 	plSummary.OperatingLoss.Previous = previousInt
-					// 	plSummary.OperatingLoss.Current = currentInt
-				}
-			}
-			if strings.Contains(titleName, "営業利益") {
-				plSummary.OperatingProfit.Previous = previousInt
-				plSummary.OperatingProfit.Current = currentInt
+      // switch titleName {
+      // case "売上原価":
+      //   plSummary.CostOfGoodsSold.Previous = previousIntValue
+      //   plSummary.CostOfGoodsSold.Current = currentIntValue
+      // case "販売費及び一般管理費":
+      //   plSummary.SGAndA.Previous = previousIntValue
+      //   plSummary.SGAndA.Current = currentIntValue
+      // case "売上高":
+      //   plSummary.Sales.Previous = previousIntValue
+      //   plSummary.Sales.Current = currentIntValue
+      //   // fundamental
+      //   fundamental.Sales = currentIntValue
+      // }
+      if strings.Contains(titleName, "売上原価") {
+        plSummary.CostOfGoodsSold.Previous = previousIntValue
+        plSummary.CostOfGoodsSold.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "販売費及び一般管理費") {
+        plSummary.SGAndA.Previous = previousIntValue
+        plSummary.SGAndA.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "売上高") {
+        plSummary.Sales.Previous = previousIntValue
+        plSummary.Sales.Current = currentIntValue
         // fundamental
-        fundamental.OperatingProfit = currentInt
+        fundamental.Sales = currentIntValue
+      }
+			if strings.Contains(titleName, "営業利益") {
+				plSummary.OperatingProfit.Previous = previousIntValue
+				plSummary.OperatingProfit.Current = currentIntValue
+        // fundamental
+        fundamental.OperatingProfit = currentIntValue
 			}
 		}
 		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
@@ -798,6 +920,8 @@ func ValidateSummary(summary internal.Summary) bool {
 	if summary.CompanyName != "" &&
 		summary.PeriodStart != "" &&
 		summary.PeriodEnd != "" &&
+		summary.CurrentAssets.Previous != 0 &&
+		summary.CurrentAssets.Current != 0 &&
 		summary.TangibleAssets.Previous != 0 &&
 		summary.TangibleAssets.Current != 0 &&
 		summary.IntangibleAssets.Previous != 0 &&
@@ -833,7 +957,7 @@ func ValidatePLSummary(plSummary internal.PLSummary) bool {
 }
 
 func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyName string, isSummaryValid bool, isPLSummaryValid bool) {
-  foundItems, err := queryByName(dynamoClient, companyName, EDINETCode)
+  foundItems, err := api.QueryByName(dynamoClient, tableName, companyName, EDINETCode)
   if err != nil {
     fmt.Println(err)
     return
@@ -863,7 +987,7 @@ func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyNa
     }
 
     input := &dynamodb.PutItemInput{
-      TableName: aws.String("compass_companies"),
+      TableName: aws.String(tableName),
       Item:      item,
     }
     _, err = dynamoClient.PutItem(context.TODO(), input)
@@ -871,7 +995,7 @@ func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyNa
       fmt.Println("dynamoClient.PutItem err: ", err)
       return
     }
-    doneMsg := fmt.Sprintf("registered「%s」", companyName)
+    doneMsg := fmt.Sprintf("「%s」をDBに新規登録しました ⭕️", companyName)
     fmt.Println(doneMsg)
   } else {
     foundItem := foundItems[0]
@@ -885,11 +1009,6 @@ func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyNa
         fmt.Println("attributevalue.UnmarshalMap err: ", err)
         return
       }
-      fmt.Println("==========================")
-      fmt.Println("登録済み companyID: ", company.ID)
-      fmt.Println("登録済み companyName: ", company.Name)
-      fmt.Println("登録済み BS: ", company.BS)
-      fmt.Println("登録済み PL: ", company.PL)
 
       if company.BS == 0 && isSummaryValid {
         // company.BS を 1 に更新
@@ -904,34 +1023,10 @@ func RegisterCompany(dynamoClient *dynamodb.Client, EDINETCode string, companyNa
   }
 }
 
-func queryByName(svc *dynamodb.Client, name string, edinetCode string) ([]map[string]types.AttributeValue, error) {
-	input := &dynamodb.QueryInput{
-		TableName: aws.String("compass_companies"),
-		IndexName: aws.String("CompanyNameIndex"), // GSIを指定
-		KeyConditionExpression: aws.String("#n = :name AND #e = :edinetCode"),
-		ExpressionAttributeNames: map[string]string{
-			"#n": "name",       // `name`をエイリアス
-			"#e": "edinetCode", // `edinetCode`をエイリアス
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":name":       &types.AttributeValueMemberS{Value: name},
-			":edinetCode": &types.AttributeValueMemberS{Value: edinetCode},
-		},
-	}
-
-	// クエリの実行
-	result, err := svc.Query(context.TODO(), input)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Items, nil
-}
-
 func UpdateBS(dynamoClient *dynamodb.Client, id string, bs int){
   // 更新するカラムとその値の指定
   updateInput := &dynamodb.UpdateItemInput{
-    TableName: aws.String("compass_companies"),
+    TableName: aws.String(tableName),
     Key: map[string]types.AttributeValue{
         "id": &types.AttributeValueMemberS{Value: id},
     },
@@ -946,19 +1041,19 @@ func UpdateBS(dynamoClient *dynamodb.Client, id string, bs int){
   }
 
   // 更新の実行
-  result, err := dynamoClient.UpdateItem(context.TODO(), updateInput)
+  _, err := dynamoClient.UpdateItem(context.TODO(), updateInput)
   if err != nil {
       log.Fatalf("failed to update item, %v", err)
   }
 
   // 結果の表示
-  fmt.Printf("UpdateBS result: %+v\n", result)
+  // fmt.Printf("UpdateBS result: %+v\n", result)
 }
 
 func UpdatePL(dynamoClient *dynamodb.Client, id string, pl int){
   // 更新するカラムとその値の指定
   updateInput := &dynamodb.UpdateItemInput{
-    TableName: aws.String("compass_companies"),
+    TableName: aws.String(tableName),
     Key: map[string]types.AttributeValue{
         "id": &types.AttributeValueMemberS{Value: id},
     },
@@ -973,27 +1068,14 @@ func UpdatePL(dynamoClient *dynamodb.Client, id string, pl int){
   }
 
   // 更新の実行
-  result, err := dynamoClient.UpdateItem(context.TODO(), updateInput)
+  _, err := dynamoClient.UpdateItem(context.TODO(), updateInput)
   if err != nil {
       log.Fatalf("failed to update item, %v", err)
   }
 
   // 結果の表示
-  fmt.Printf("UpdatePL result: %+v\n", result)
+  // fmt.Printf("UpdatePL result: %+v\n", result)
 }
-/*
-TODO: 自己資本比率、売上高営業利益率 => fundamentals
-json で入れる
-=> 外から参照渡しする
-{
-  period_start: 開始日 (両方)
-  period_end: 終了日 (両方)
-  sales: 売上高 (PL)
-  operating_profit: 営業利益 (PL)
-  liabilities: 負債 (BS)
-  netAssets: 純資産 (BS)
-}
-*/
 
 func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fundamental, EDINETCode string) {
   region := os.Getenv("REGION")
@@ -1030,7 +1112,8 @@ func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fun
       fmt.Println(err)
       return
     }
-    uploadDoneMsg := fmt.Sprintf("Successfully uploaded fundamentals (CompanyName: %s, FileName: %s)", fundamental.CompanyName, key)
+    uploadDoneMsg := fmt.Sprintf("「%s」のファンダメンタルズJSONを登録しました ⭕️ (ファイル名: %s)", fundamental.CompanyName, key)
+
     fmt.Println(uploadDoneMsg)
   }
 }
@@ -1047,3 +1130,159 @@ func ValidateFundamentals(fundamental internal.Fundamental) bool {
 	}
 	return false
 }
+
+// CF計算書登録処理
+/*
+cfFileNamePattern:          ファイル名のパターン
+body:                       文字列に変換したXBRLファイル
+consolidatedCFMattches:     連結キャッシュ・フロー計算書
+consolidatedCFIFRSMattches: 連結キャッシュ・フロー計算書 (IFRS)
+soloCFMattches:             キャッシュ・フロー計算書
+soloCFIFRSPattern:          キャッシュ・フロー計算書 (IFRS)
+*/
+func ParseCF(cfFileNamePattern, body string, consolidatedCFMattches string, consolidatedCFIFRSMattches string, soloCFMattches string, soloCFIFRSMattches string) (*goquery.Document, error) {
+
+  if consolidatedCFMattches == "" && consolidatedCFIFRSMattches == "" && soloCFMattches == "" && soloCFIFRSMattches == "" {
+    return nil, errors.New("パースする対象がありません")
+  }
+
+  var match string
+
+  if consolidatedCFMattches != "" {
+    match = consolidatedCFMattches
+  } else if consolidatedCFIFRSMattches != "" {
+    match = consolidatedCFIFRSMattches
+  } else if soloCFMattches != "" {
+    match = soloCFMattches
+  } else if soloCFIFRSMattches != "" {
+    match = soloCFIFRSMattches
+  }
+
+  unescapedMatch := html.UnescapeString(match)
+  // デコードしきれていない文字は replace
+	// 特定のエンティティをさらに手動でデコード
+	unescapedMatch = strings.ReplaceAll(unescapedMatch, "&apos;", "'")
+
+  HTMLDirName := "HTML"
+  cfHTMLFileName := fmt.Sprintf("%s.html", cfFileNamePattern)
+	cfHTMLFilePath := filepath.Join(HTMLDirName, cfHTMLFileName)
+
+  // HTML ファイルの作成
+  cfHTML, err := os.Create(cfHTMLFilePath)
+	if err != nil {
+		fmt.Println("CF HTML create err: ", err)
+		return nil, err;
+	}
+	defer cfHTML.Close()
+
+  // HTML ファイルに書き込み
+	_, err = cfHTML.WriteString(unescapedMatch)
+	if err != nil {
+		fmt.Println("CF HTML write err: ", err)
+		return nil, err
+	}
+
+  // HTML ファイルの読み込み
+	cfHTMLFile, err := os.Open(cfHTMLFilePath)
+	if err != nil {
+		fmt.Println("CF HTML open error: ", err)
+		return nil, err
+	}
+	defer cfHTMLFile.Close()
+
+	// goqueryでHTMLをパース
+	cfDoc, err := goquery.NewDocumentFromReader(cfHTMLFile)
+	if err != nil {
+    fmt.Println("CF goquery.NewDocumentFromReader err: ", err)
+		return nil, err
+	}
+  return cfDoc, nil
+}
+
+func UpdateCFSummary(cfDoc *goquery.Document, cfSummary *internal.CFSummary){
+  cfDoc.Find("tr").Each(func(i int, s *goquery.Selection) {
+		tdText := s.Find("td").Text()
+		tdText = strings.TrimSpace(tdText)
+		splitTdTexts := strings.Split(tdText, "\n")
+		var titleTexts []string
+		for _, t := range splitTdTexts {
+			if t != "" {
+				titleTexts = append(titleTexts, t)
+			}
+		}
+		if len(titleTexts) >= 3 {
+			titleName := titleTexts[0]
+
+      // 前期
+			previousText := titleTexts[1]
+      previousIntValue, err := api.ConvertTextValue2IntValue(previousText)
+      if err != nil {
+        // fmt.Println("previous value convert error: ", err)
+        return
+      }
+
+			// 当期
+			currentText := titleTexts[2]
+			currentIntValue, err := api.ConvertTextValue2IntValue(currentText)
+      if err != nil {
+        // fmt.Println("current value convert error: ", err)
+        return
+      }
+
+      if strings.Contains(titleName, "営業活動による") {
+        cfSummary.OperatingCF.Previous = previousIntValue
+        cfSummary.OperatingCF.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "投資活動による") {
+        cfSummary.InvestingCF.Previous = previousIntValue
+        cfSummary.InvestingCF.Current = currentIntValue
+      }
+      if strings.Contains(titleName, "財務活動による") {
+        cfSummary.FinancingCF.Previous = previousIntValue
+        cfSummary.FinancingCF.Current = currentIntValue
+      }
+			if strings.Contains(titleName, "期首残高") {
+				cfSummary.StartCash.Previous = previousIntValue
+				cfSummary.StartCash.Current = currentIntValue
+			}
+			if strings.Contains(titleName, "期末残高") {
+				cfSummary.EndCash.Previous = previousIntValue
+				cfSummary.EndCash.Current = currentIntValue
+			}
+		}
+		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
+			baseStr := splitTdTexts[0]
+			baseStr = strings.ReplaceAll(baseStr, "(", "")
+			baseStr = strings.ReplaceAll(baseStr, ")", "")
+			splitUnitStrs := strings.Split(baseStr, "：")
+			if len(splitUnitStrs) >= 2 {
+				cfSummary.UnitString = splitUnitStrs[1]
+			}
+		}
+	})
+}
+
+func ValidateCFSummary(cfSummary internal.CFSummary)bool {
+  if cfSummary.CompanyName != "" &&
+		cfSummary.PeriodStart != "" &&
+		cfSummary.PeriodEnd != "" &&
+		cfSummary.OperatingCF.Previous != 0 &&
+		cfSummary.OperatingCF.Current != 0 &&
+		cfSummary.InvestingCF.Previous != 0 &&
+		cfSummary.InvestingCF.Current != 0 &&
+		cfSummary.FinancingCF.Previous != 0 &&
+		cfSummary.FinancingCF.Current != 0 &&
+		cfSummary.StartCash.Previous != 0 &&
+		cfSummary.StartCash.Current != 0 &&
+		cfSummary.EndCash.Previous != 0 &&
+		cfSummary.EndCash.Current != 0 {
+		return true
+	}
+	return false
+}
+
+// TODO: CF HTML 登録処理
+func RegisterCFHTML(){}
+
+// TODO: CF JSON 登録処理
+func RegisterCFJSON(){}
