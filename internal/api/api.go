@@ -550,7 +550,7 @@ func GetReports(c *gin.Context) {
 				splitFileName := strings.Split(key, "/")
 				if len(splitFileName) >= 2 {
 					fileType := splitFileName[1] // BS or PL
-					if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
+					if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") || (reportType == "CF" && fileType == "CF") {
 						keys = append(keys, key)
 					}
 				}
@@ -561,7 +561,7 @@ func GetReports(c *gin.Context) {
 				splitFileName := strings.Split(key, "/")
 				if len(splitFileName) >= 2 {
 					fileType := splitFileName[1] // BS or PL
-					if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") {
+					if (reportType == "BS" && fileType == "BS") || (reportType == "PL" && fileType == "PL") || (reportType == "CF" && fileType == "CF") {
 						keys = append(keys, key)
 					}
 				}
