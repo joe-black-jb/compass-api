@@ -15,3 +15,7 @@ fmt:
 
 xbrl:
 	go run ./batch/getXBRL.go
+
+delS3:
+	go run ./S3/deleteS3.go
+
