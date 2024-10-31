@@ -38,6 +38,19 @@ var dynamoClient *dynamodb.Client
 
 var tableName string
 
+// TODO: 売上高 ではなく 営業収益 で計上している企業の PL
+//       売上高と営業収益がどちらか入っていればOK
+// TODO: 営業利益 の部分に 営業損失 とだけ記載してある企業の PL
+// TODO: HTML の table タグの width を消す
+
+/*
+【営業収益、営業利益の場合】
+=== 借方 ===
+
+=== 貸方 ===
+
+*/
+
 func init() {
 	err := godotenv.Load()
 	if err != nil {
@@ -58,8 +71,6 @@ func init() {
 	dynamoClient = dynamodb.NewFromConfig(cfg)
 	tableName = os.Getenv("DYNAMO_TABLE_NAME")
 }
-
-// TODO: CF計算書の登録、取得処理
 
 func main() {
 	start := time.Now()
@@ -118,7 +129,6 @@ func main() {
 			NetAssets:       0,
 		}
 		go RegisterReport(dynamoClient, EDINETCode, docID, companyName, periodStart, periodEnd, &fundamental, &wg)
-		// fmt.Println("ファンダメンタル ⭐️: ", fundamental)
 	}
 	wg.Wait()
 
@@ -199,16 +209,15 @@ func GetReports() ([]internal.Result, error) {
 	}
 
 	var results []internal.Result
-	// 2022-01-01 ~ 2024-09-30 まで完了
 	/*
 	  【末日】
 	    Jan: 31   Feb: 28   Mar: 31   Apr: 30   May: 31   Jun: 30
 	    Jul: 31   Aug: 31   Sep: 30   Oct: 31   Nov: 30   Dec: 31
 	*/
 	// 集計開始日付
-	date := time.Date(2024, time.February, 1, 1, 0, 0, 0, loc)
+	date := time.Date(2024, time.October, 1, 1, 0, 0, 0, loc)
 	// 集計終了日付
-	endDate := time.Date(2024, time.February, 31, 1, 0, 0, 0, loc)
+	endDate := time.Date(2024, time.October, 31, 1, 0, 0, 0, loc)
 	// now := time.Now()
 	for date.Before(endDate) || date.Equal(endDate) {
 		fmt.Println(fmt.Sprintf("%s の処理を開始します⭐️", date.Format("2006-01-02")))
@@ -337,129 +346,37 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	soloPLRe := regexp.MustCompile(soloPLPattern)
 	soloPLMatches := soloPLRe.FindString(string(body))
 
-	//////////// CF 計算書 ////////////
 	// 【連結キャッシュ・フロー計算書】
 	consolidatedCFPattern := `(?s)<jpcrp_cor:ConsolidatedStatementOfCashFlowsTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:ConsolidatedStatementOfCashFlowsTextBlock>`
 	consolidatedCFRe := regexp.MustCompile(consolidatedCFPattern)
 	consolidatedCFMattches := consolidatedCFRe.FindString(string(body))
-	// fmt.Println(fmt.Sprintf("「%s」の連結CF\n%s", companyName, consolidatedCFMattches))
-	fmt.Println(fmt.Sprintf("「%s」の連結CFはありますか❓: %v", companyName, consolidatedCFMattches != ""))
 	// 【連結キャッシュ・フロー計算書 (IFRS)】
 	consolidatedCFIFRSPattern := `(?s)<jpigp_cor:ConsolidatedStatementOfCashFlowsIFRSTextBlock contextRef="CurrentYearDuration">(.*?)</jpigp_cor:ConsolidatedStatementOfCashFlowsIFRSTextBlock>`
 	consolidatedCFIFRSRe := regexp.MustCompile(consolidatedCFIFRSPattern)
 	consolidatedCFIFRSMattches := consolidatedCFIFRSRe.FindString(string(body))
-	// fmt.Println(fmt.Sprintf("「%s」の連結CF (IFRS)\n%s", companyName, consolidatedCFIFRSMattches))
-	fmt.Println(fmt.Sprintf("「%s」の連結CF (IFRS) はありますか❓: %v", companyName, consolidatedCFIFRSMattches != ""))
 
 	// 【キャッシュ・フロー計算書】
 	soloCFPattern := `(?s)<jpcrp_cor:StatementOfCashFlowsTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:StatementOfCashFlowsTextBlock>`
 	soloCFRe := regexp.MustCompile(soloCFPattern)
 	soloCFMattches := soloCFRe.FindString(string(body))
-	fmt.Println(fmt.Sprintf("「%s」のCFはありますか❓: %v", companyName, soloCFMattches != ""))
 
 	// 【キャッシュ・フロー計算書 (IFRS)】
 	soloCFIFRSPattern := `(?s)<jpcrp_cor:StatementOfCashFlowsIFRSTextBlock contextRef="CurrentYearDuration">(.*?)</jpcrp_cor:StatementOfCashFlowsIFRSTextBlock>`
 	soloCFIFRSRe := regexp.MustCompile(soloCFIFRSPattern)
 	soloCFIFRSMattches := soloCFIFRSRe.FindString(string(body))
-	fmt.Println(fmt.Sprintf("「%s」のCF (IFRS)はありますか❓: %v", companyName, soloCFIFRSMattches != ""))
-	////////////////////////////////////
 
-	// エスケープ文字をデコード
-	// 貸借対照表データの整形
-	var unescapedBS string
-	if consolidatedBSMatches == "" && soloBSMatches == "" {
-		return
-	} else if consolidatedBSMatches != "" {
-		unescapedBS = html.UnescapeString(consolidatedBSMatches)
-	} else if soloBSMatches != "" {
-		unescapedBS = html.UnescapeString(soloBSMatches)
-	}
 
-	// 損益計算書データの整形
-	var unescapedPL string
-	if consolidatedPLMatches == "" && soloPLMatches == "" {
-		return
-	} else if consolidatedPLMatches != "" {
-		unescapedPL = html.UnescapeString(consolidatedPLMatches)
-	} else if soloPLMatches != "" {
-		unescapedPL = html.UnescapeString(soloPLMatches)
-	}
-
-	// デコードしきれていない文字は replace
-	// 特定のエンティティをさらに手動でデコード
-	unescapedBS = strings.ReplaceAll(unescapedBS, "&apos;", "'")
-	unescapedPL = strings.ReplaceAll(unescapedPL, "&apos;", "'")
-
-	// html ファイルとして書き出す
-	HTMLDirName := "HTML"
-	bsHTMLFileName := fmt.Sprintf("%s.html", BSFileNamePattern)
-	bsHTMLFilePath := filepath.Join(HTMLDirName, bsHTMLFileName)
-
-	plHTMLFileName := fmt.Sprintf("%s.html", PLFileNamePattern)
-	plHTMLFilePath := filepath.Join(HTMLDirName, plHTMLFileName)
-
-	// HTMLディレクトリが存在するか確認
-	if _, err := os.Stat(HTMLDirName); os.IsNotExist(err) {
-		// ディレクトリが存在しない場合は作成
-		err := os.Mkdir(HTMLDirName, 0755) // 0755はディレクトリのパーミッション
-		if err != nil {
-			fmt.Println("Error creating directory:", err)
-			return
-		}
-	}
-
-	// 貸借対照表
-	bsHTML, err := os.Create(bsHTMLFilePath)
+	// 貸借対照表HTMLをローカルに作成
+	doc, err := CreateHTML("BS", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
 	if err != nil {
-		fmt.Println("BS HTML create err: ", err)
+		fmt.Println("PL CreateHTML エラー: ", err)
 		return
 	}
-	defer bsHTML.Close()
-
-	_, err = bsHTML.WriteString(unescapedBS)
+	// 損益計算書HTMLをローカルに作成
+	plDoc, err := CreateHTML("PL", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
 	if err != nil {
-		fmt.Println("BS HTML write err: ", err)
+		fmt.Println("PL CreateHTML エラー: ", err)
 		return
-	}
-
-	bsHTMLFile, err := os.Open(bsHTMLFilePath)
-	if err != nil {
-		fmt.Println("BS HTML open error: ", err)
-		return
-	}
-	defer bsHTMLFile.Close()
-
-	// goqueryでHTMLをパース
-	doc, err := goquery.NewDocumentFromReader(bsHTMLFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// 損益計算書
-	plHTML, err := os.Create(plHTMLFilePath)
-	if err != nil {
-		fmt.Println("PL HTML create err: ", err)
-		return
-	}
-	defer plHTML.Close()
-
-	_, err = plHTML.WriteString(unescapedPL)
-	if err != nil {
-		fmt.Println("PL HTML write err: ", err)
-		return
-	}
-
-	plHTMLFile, err := os.Open(plHTMLFilePath)
-	if err != nil {
-		fmt.Println("PL HTML open error: ", err)
-		return
-	}
-	defer plHTMLFile.Close()
-
-	// goqueryでHTMLをパース
-	plDoc, err := goquery.NewDocumentFromReader(plHTMLFile)
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	// 貸借対照表データ
@@ -468,7 +385,8 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	summary.PeriodStart = periodStart
 	summary.PeriodEnd = periodEnd
 	UpdateSummary(doc, &summary, fundamental)
-	isSummaryValid := ValidateSummary(summary)
+	// BS バリデーション用
+	// isSummaryValid := ValidateSummary(summary)
 
 	// 損益計算書データ
 	var plSummary internal.PLSummary
@@ -480,276 +398,63 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 
 	// CF計算書データ
 	cfFileNamePattern := fmt.Sprintf("%s-%s-CF-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
-	cfDoc, err := ParseCF(cfFileNamePattern, string(body), consolidatedCFMattches, consolidatedCFIFRSMattches, soloCFMattches, soloCFIFRSMattches)
+	cfHTML, err := CreateCFHTML(cfFileNamePattern, string(body), consolidatedCFMattches, consolidatedCFIFRSMattches, soloCFMattches, soloCFIFRSMattches)
 	if err != nil {
-		fmt.Println("ParseCF err: ", err)
+		fmt.Println("CreateCFHTML err: ", err)
 		return
 	}
 	var cfSummary internal.CFSummary
 	cfSummary.CompanyName = companyName
 	cfSummary.PeriodStart = periodStart
 	cfSummary.PeriodEnd = periodEnd
-	UpdateCFSummary(cfDoc, &cfSummary)
-	// TODO: CFバリデーション後処理
-	// isCFSummaryValid := ValidateCFSummary(cfSummary)
+	UpdateCFSummary(cfHTML, &cfSummary)
+	isCFSummaryValid := ValidateCFSummary(cfSummary)
 
-	// fmt.Println("summary ⭐️: ", summary)
-
-	// 貸借対照表バリデーション後
-	bsJsonName := fmt.Sprintf("%s.json", BSFileNamePattern)
-	bsJsonPath := fmt.Sprintf("json/%s", bsJsonName)
-	if isSummaryValid {
-		// RegisterCompany
-		RegisterCompany(dynamoClient, EDINETCode, companyName, isSummaryValid, false)
-		// fmt.Println("有効な BS です🎾")
-
-		// ディレクトリが存在しない場合は作成
-		err = os.MkdirAll("json", os.ModePerm)
-		if err != nil {
-			fmt.Println("Error creating directory:", err)
-			return
-		}
-
-		jsonFile, err := os.Create(bsJsonPath)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer jsonFile.Close()
-
-		jsonBody, err := json.MarshalIndent(summary, "", "  ")
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		_, err = jsonFile.Write(jsonBody)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		// S3 に json ファイルを送信
-		// Key は aws configure で設定する
-		region := os.Getenv("REGION")
-		sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		s3Client := s3.NewFromConfig(sdkConfig)
-		bucketName := os.Getenv("BUCKET_NAME")
-		jsonFileOpen, err := os.Open(bsJsonPath)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		defer jsonFileOpen.Close()
-
-		splitJsonName := strings.Split(bsJsonName, "-")
-		if len(splitJsonName) >= 3 {
-			reportType := splitJsonName[2] // BS or PL
-			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, bsJsonName)
-
-			// ファイルの存在チェック
-			existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
-				Bucket: aws.String(bucketName),
-				Key:    aws.String(key),
-			})
-			if existsFile == nil {
-				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
-					Bucket:      aws.String(bucketName),
-					Key:         aws.String(key),
-					Body:        jsonFileOpen,
-					ContentType: aws.String("application/json"),
-				})
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				uploadDoneMsg := fmt.Sprintf("「%s」の貸借対照表JSONを登録しました ⭕️ (ファイル名: %s)", companyName, key)
-				fmt.Println(uploadDoneMsg)
-			}
-		}
-
-		// HTML 送信
-		// 貸借対照表HTML
-		bsHTMLFileOpen, err := os.Open(bsHTMLFilePath)
-		if err != nil {
-			fmt.Println("BS HTML create err: ", err)
-			return
-		}
-		defer bsHTMLFileOpen.Close()
-
-		splitBSHTMLName := strings.Split(bsHTMLFileName, "-")
-		if len(splitBSHTMLName) >= 3 {
-			reportType := splitBSHTMLName[2] // BS or PL
-			bsHTMLKey := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, bsHTMLFileName)
-
-			// ファイルの存在チェック
-			existsBSHTMLFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
-				Bucket: aws.String(bucketName),
-				Key:    aws.String(bsHTMLKey),
-			})
-			if existsBSHTMLFile == nil {
-				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
-					Bucket:      aws.String(bucketName),
-					Key:         aws.String(bsHTMLKey),
-					Body:        bsHTMLFileOpen,
-					ContentType: aws.String("text/html"),
-				})
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				uploadDoneMsg := fmt.Sprintf("「%s」の貸借対照表HTMLを登録しました ⭕️ (ファイル名: %s)", companyName, bsHTMLKey)
-				fmt.Println(uploadDoneMsg)
-			}
-		}
-		// validSummaryMsg := fmt.Sprintf("有効な BS Summary (CompanyName: %s, EDINETCode: %s, docID: %s, summary: %v)", companyName, EDINETCode, docID, summary)
-		// fmt.Println(validSummaryMsg)
+	// CF計算書バリデーション後
+	if isCFSummaryValid {
+		var putFileWg sync.WaitGroup
+		putFileWg.Add(2)
+		// S3 に HTML 送信 (HTML はスクレイピング処理があるので S3 への送信処理を個別で実行)
+		go PutFileToS3(EDINETCode, companyName, cfFileNamePattern, "html", &putFileWg)
+		// S3 に JSON 送信
+		go HandleRegisterJSON(EDINETCode, companyName, cfFileNamePattern, cfSummary, &putFileWg)
+		putFileWg.Wait()
 	} else {
-		// invalidSummaryMsg := fmt.Sprintf("Invalid BS Summary (CompanyName: %s, EDINETCode: %s, docID: %s, summary: %v)", companyName, EDINETCode, docID, summary)
-		invalidSummaryJson, err := json.MarshalIndent(summary, "", "  ")
-		if err != nil {
-			fmt.Println("BSデータの json.MarshalIndent エラー❗️: ", err)
-		}
-		invalidSummaryMsg := fmt.Sprintf("「%s」の BS データが不正です ❌ (EDINETCode: %s, docID: %s, summaryJSON:\n%v)", companyName, EDINETCode, docID, string(invalidSummaryJson))
-		fmt.Println(invalidSummaryMsg)
+		PrintValidatedSummaryMsg(companyName, cfFileNamePattern, cfSummary, isCFSummaryValid)
 	}
+
+	// 貸借対照表バリデーションなしバージョン
+	_ , err = CreateJSON(BSFileNamePattern, summary)
+	if err != nil {
+		fmt.Println("BS JSON ファイル作成エラー: ", err)
+		return
+	}
+	var putBsWg sync.WaitGroup
+	putBsWg.Add(2)
+	// BS JSON 送信
+	go PutFileToS3(EDINETCode, companyName, BSFileNamePattern, "json", &putBsWg)
+	// BS HTML 送信
+	go PutFileToS3(EDINETCode, companyName, BSFileNamePattern, "html", &putBsWg)
+	putBsWg.Wait()
+
 
 	// 損益計算書バリデーション後
-	plJsonName := fmt.Sprintf("%s.json", PLFileNamePattern)
-	plJsonPath := fmt.Sprintf("json/%s", plJsonName)
 	if isPLSummaryValid {
-		// RegisterCompany
-		RegisterCompany(dynamoClient, EDINETCode, companyName, false, isPLSummaryValid)
-		jsonFile, err := os.Create(plJsonPath)
+		_ , err = CreateJSON(PLFileNamePattern, plSummary)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("PL JSON ファイル作成エラー: ", err)
 			return
 		}
-		defer jsonFile.Close()
-
-		jsonBody, err := json.MarshalIndent(plSummary, "", "  ")
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		_, err = jsonFile.Write(jsonBody)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-
-		// S3 に json ファイルを送信
-		// Key は aws configure で設定する
-		region := os.Getenv("REGION")
-		sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		s3Client := s3.NewFromConfig(sdkConfig)
-		bucketName := os.Getenv("BUCKET_NAME")
-		jsonFileOpen, err := os.Open(plJsonPath)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		splitJsonName := strings.Split(plJsonName, "-")
-		if len(splitJsonName) >= 3 {
-			reportType := splitJsonName[2] // BS or PL
-			key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, plJsonName)
-
-			// ファイルの存在チェック
-			existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
-				Bucket: aws.String(bucketName),
-				Key:    aws.String(key),
-			})
-			if existsFile == nil {
-				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
-					Bucket:      aws.String(bucketName),
-					Key:         aws.String(key),
-					Body:        jsonFileOpen,
-					ContentType: aws.String("application/json"),
-				})
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				uploadDoneMsg := fmt.Sprintf("「%s」の損益計算書JSONを登録しました ⭕️ (ファイル名: %s)", companyName, key)
-				fmt.Println(uploadDoneMsg)
-			}
-		}
-
-		// 損益計算書HTML
-		plHTMLFileOpen, err := os.Open(plHTMLFilePath)
-		if err != nil {
-			fmt.Println("PL HTML create err: ", err)
-			return
-		}
-		defer plHTMLFileOpen.Close()
-
-		splitPLHTMLName := strings.Split(plHTMLFileName, "-")
-		if len(splitPLHTMLName) >= 3 {
-			reportType := splitPLHTMLName[2] // BS or PL
-			plHTMLKey := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, plHTMLFileName)
-
-			// ファイルの存在チェック
-			existsPLHTMLFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
-				Bucket: aws.String(bucketName),
-				Key:    aws.String(plHTMLKey),
-			})
-			if existsPLHTMLFile == nil {
-				_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
-					Bucket:      aws.String(bucketName),
-					Key:         aws.String(plHTMLKey),
-					Body:        plHTMLFileOpen,
-					ContentType: aws.String("text/html"),
-				})
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				uploadDoneMsg := fmt.Sprintf("「%s」の損益計算書HTMLを登録しました ⭕️ (ファイル名: %s)", companyName, plHTMLKey)
-				fmt.Println(uploadDoneMsg)
-			}
-		}
-	} else {
-		invalidPLSummaryJson, err := json.MarshalIndent(plSummary, "", "  ")
-		if err != nil {
-			fmt.Println("PLデータの json.MarshalIndent エラー❗️: ", err)
-		}
-		invalidSummaryMsg := fmt.Sprintf("「%s」の PL データが不正です ❌ (EDINETCode: %s, docID: %s, summaryJSON:\n%s)", companyName, EDINETCode, docID, string(invalidPLSummaryJson))
-		fmt.Println(invalidSummaryMsg)
+		var putPlWg sync.WaitGroup
+		putPlWg.Add(2)
+		// PL JSON 送信
+		go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "json", &putPlWg)
+		// PL HTML 送信
+		go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "html", &putPlWg)
+		putPlWg.Wait()
 	}
 
-	// TODO: CF計算書バリデーション後
-	/*
-	  ・CF HTML の送信
-	  ・CF JSON の送信
-	*/
-	// cfJsonName := fmt.Sprintf("%s.json", cfFileNamePattern)
-
-	// HTML ファイルの削除
-	err = os.RemoveAll(bsHTMLFilePath)
-	if err != nil {
-		fmt.Println("BS HTML ファイル削除エラー: ", err)
-	}
-	err = os.RemoveAll(plHTMLFilePath)
-	if err != nil {
-		fmt.Println("PL HTML ファイル削除エラー: ", err)
-	}
-	// JSON ファイルの削除
-	err = os.RemoveAll(bsJsonPath)
-	if err != nil {
-		fmt.Println("PL HTML ファイル削除エラー: ", err)
-	}
-	err = os.RemoveAll(plJsonPath)
-	if err != nil {
-		fmt.Println("PL HTML ファイル削除エラー: ", err)
-	}
-	// XBRL ファイルの削除 parentPath
+	// XBRL ファイルの削除
 	xbrlDir := filepath.Join("XBRL", docID)
 	err = os.RemoveAll(xbrlDir)
 	if err != nil {
@@ -790,37 +495,37 @@ func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental
 				return
 			}
 
-			if strings.Contains(titleName, "流動資産合計") {
+			if titleName == "流動資産合計" {
 				summary.CurrentAssets.Previous = previousIntValue
 				summary.CurrentAssets.Current = currentIntValue
 			}
-			if strings.Contains(titleName, "有形固定資産合計") {
+			if titleName == "有形固定資産合計" {
 				summary.TangibleAssets.Previous = previousIntValue
 				summary.TangibleAssets.Current = currentIntValue
 			}
-			if strings.Contains(titleName, "無形固定資産合計") {
+			if titleName == "無形固定資産合計" {
 				summary.IntangibleAssets.Previous = previousIntValue
 				summary.IntangibleAssets.Current = currentIntValue
 			}
-			if strings.Contains(titleName, "投資その他の資産合計") {
+			if titleName == "投資その他の資産合計" {
 				summary.InvestmentsAndOtherAssets.Previous = previousIntValue
 				summary.InvestmentsAndOtherAssets.Current = currentIntValue
 			}
-			if strings.Contains(titleName, "流動負債合計") {
+			if titleName == "流動負債合計" {
 				summary.CurrentLiabilities.Previous = previousIntValue
 				summary.CurrentLiabilities.Current = currentIntValue
 			}
-			if strings.Contains(titleName, "固定負債合計") {
+			if titleName == "固定負債合計" {
 				summary.FixedLiabilities.Previous = previousIntValue
 				summary.FixedLiabilities.Current = currentIntValue
 			}
-			if strings.Contains(titleName, "純資産合計") {
+			if titleName == "純資産合計" {
 				summary.NetAssets.Previous = previousIntValue
 				summary.NetAssets.Current = currentIntValue
 				// fundamental
 				fundamental.NetAssets = currentIntValue
 			}
-			if strings.Contains(titleName, "負債合計") {
+			if titleName == "負債合計" {
 				// fundamental
 				fundamental.Liabilities = currentIntValue
 			}
@@ -902,6 +607,19 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, funda
 				plSummary.OperatingProfit.Current = currentIntValue
 				// fundamental
 				fundamental.OperatingProfit = currentIntValue
+			}
+			if titleName == "営業損失（△）" {
+				fmt.Println("営業損失とだけ書いてあります")
+				if plSummary.OperatingProfit.Previous == 0 {
+					plSummary.OperatingProfit.Previous = previousIntValue
+				}
+				if plSummary.OperatingProfit.Current == 0 {
+					plSummary.OperatingProfit.Current = currentIntValue
+				}
+				// fundamental
+				if fundamental.OperatingProfit == 0 {
+					fundamental.OperatingProfit = currentIntValue
+				}
 			}
 		}
 		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
@@ -1045,9 +763,6 @@ func UpdateBS(dynamoClient *dynamodb.Client, id string, bs int) {
 	if err != nil {
 		log.Fatalf("failed to update item, %v", err)
 	}
-
-	// 結果の表示
-	// fmt.Printf("UpdateBS result: %+v\n", result)
 }
 
 func UpdatePL(dynamoClient *dynamodb.Client, id string, pl int) {
@@ -1072,9 +787,6 @@ func UpdatePL(dynamoClient *dynamodb.Client, id string, pl int) {
 	if err != nil {
 		log.Fatalf("failed to update item, %v", err)
 	}
-
-	// 結果の表示
-	// fmt.Printf("UpdatePL result: %+v\n", result)
 }
 
 func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fundamental, EDINETCode string) {
@@ -1093,7 +805,6 @@ func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fun
 		return
 	}
 	// ファイル名
-	// E00748-S100PZ48-BS-from-2020-11-01-to-2021-10-31.html
 	fundamentalsFileName := fmt.Sprintf("%s-fundamentals-from-%s-to-%s.json", EDINETCode, fundamental.PeriodStart, fundamental.PeriodEnd)
 	key := fmt.Sprintf("%s/Fundamentals/%s", EDINETCode, fundamentalsFileName)
 	// ファイルの存在チェック
@@ -1113,7 +824,6 @@ func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fun
 			return
 		}
 		uploadDoneMsg := fmt.Sprintf("「%s」のファンダメンタルズJSONを登録しました ⭕️ (ファイル名: %s)", fundamental.CompanyName, key)
-
 		fmt.Println(uploadDoneMsg)
 	}
 }
@@ -1131,6 +841,106 @@ func ValidateFundamentals(fundamental internal.Fundamental) bool {
 	return false
 }
 
+/*
+HTMLをパースしローカルに保存する
+@params
+	fileType:                BS もしくは PL
+	body:                    ファイルの中身
+	consolidatedBSMatches:   連結貸借対照表データが入っているタグの中身
+	soloBSMatches:           貸借対照表データが入っているタグの中身
+	consolidatedPLMatches:   連結損益計算書データが入っているタグの中身
+	soloPLMatches:           損益計算書データが入っているタグの中身
+  BSFileNamePattern:       BSファイル名パターン
+	PLFileNamePattern:       PLファイル名パターン
+*/
+func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern string)(*goquery.Document, error){
+	// エスケープ文字をデコード
+	var unescapedStr string
+
+	// BS の場合
+	if fileType == "BS" {
+		if consolidatedBSMatches == "" && soloBSMatches == "" {
+			return nil, errors.New("parse 対象の貸借対照表データがありません")
+		} else if consolidatedBSMatches != "" {
+			unescapedStr = html.UnescapeString(consolidatedBSMatches)
+		} else if soloBSMatches != "" {
+			unescapedStr = html.UnescapeString(soloBSMatches)
+		}
+	}
+
+	// PL の場合
+	if (fileType == "PL") {
+		if consolidatedPLMatches == "" && soloPLMatches == "" {
+			return nil, errors.New("parse 対象の損益計算書データがありません")
+		} else if consolidatedPLMatches != "" {
+			unescapedStr = html.UnescapeString(consolidatedPLMatches)
+		} else if soloPLMatches != "" {
+			unescapedStr = html.UnescapeString(soloPLMatches)
+		}
+	}
+
+	// デコードしきれていない文字は replace
+	// 特定のエンティティをさらに手動でデコード
+	unescapedStr = strings.ReplaceAll(unescapedStr, "&apos;", "'")
+
+  // HTMLデータを加工
+  unescapedStr = FormatHtmlTable(unescapedStr)
+
+	// html ファイルとして書き出す
+	HTMLDirName := "HTML"
+	var fileName string
+	var filePath string
+
+	if (fileType == "BS") {
+		fileName = fmt.Sprintf("%s.html", BSFileNamePattern)
+		filePath = filepath.Join(HTMLDirName, fileName)
+	}
+
+	if (fileType == "PL") {
+		fileName = fmt.Sprintf("%s.html", PLFileNamePattern)
+		filePath = filepath.Join(HTMLDirName, fileName)
+	}
+
+	// HTMLディレクトリが存在するか確認
+	if _, err := os.Stat(HTMLDirName); os.IsNotExist(err) {
+		// ディレクトリが存在しない場合は作成
+		err := os.Mkdir(HTMLDirName, 0755) // 0755はディレクトリのパーミッション
+		if err != nil {
+			fmt.Println("Error creating directory:", err)
+			return nil, err
+		}
+	}
+
+	createFile, err := os.Create(filePath)
+	if err != nil {
+		fmt.Println("HTML create err: ", err)
+		return nil, err
+	}
+	defer createFile.Close()
+
+	_, err = createFile.WriteString(unescapedStr)
+	if err != nil {
+		fmt.Println("HTML write err: ", err)
+		return nil, err
+	}
+
+	openFile, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println("HTML open error: ", err)
+		return nil, err
+	}
+	defer openFile.Close()
+
+	// goqueryでHTMLをパース
+	doc, err := goquery.NewDocumentFromReader(openFile)
+	if err != nil {
+		fmt.Println("HTML goquery.NewDocumentFromReader error: ", err)
+		return nil, err
+	}
+	// return した doc は updateSummary に渡す
+	return doc, nil
+}
+
 // CF計算書登録処理
 /*
 cfFileNamePattern:          ファイル名のパターン
@@ -1140,7 +950,7 @@ consolidatedCFIFRSMattches: 連結キャッシュ・フロー計算書 (IFRS)
 soloCFMattches:             キャッシュ・フロー計算書
 soloCFIFRSPattern:          キャッシュ・フロー計算書 (IFRS)
 */
-func ParseCF(cfFileNamePattern, body string, consolidatedCFMattches string, consolidatedCFIFRSMattches string, soloCFMattches string, soloCFIFRSMattches string) (*goquery.Document, error) {
+func CreateCFHTML(cfFileNamePattern, body string, consolidatedCFMattches string, consolidatedCFIFRSMattches string, soloCFMattches string, soloCFIFRSMattches string) (*goquery.Document, error) {
 
 	if consolidatedCFMattches == "" && consolidatedCFIFRSMattches == "" && soloCFMattches == "" && soloCFIFRSMattches == "" {
 		return nil, errors.New("パースする対象がありません")
@@ -1162,6 +972,7 @@ func ParseCF(cfFileNamePattern, body string, consolidatedCFMattches string, cons
 	// デコードしきれていない文字は replace
 	// 特定のエンティティをさらに手動でデコード
 	unescapedMatch = strings.ReplaceAll(unescapedMatch, "&apos;", "'")
+  unescapedMatch = FormatHtmlTable(unescapedMatch)
 
 	HTMLDirName := "HTML"
 	cfHTMLFileName := fmt.Sprintf("%s.html", cfFileNamePattern)
@@ -1197,6 +1008,37 @@ func ParseCF(cfFileNamePattern, body string, consolidatedCFMattches string, cons
 		return nil, err
 	}
 	return cfDoc, nil
+}
+
+func CreateJSON(fileNamePattern string, summary interface{}) (string, error) {
+	fileName := fmt.Sprintf("%s.json", fileNamePattern)
+	filePath := fmt.Sprintf("json/%s", fileName)
+
+	// ディレクトリが存在しない場合は作成
+	err := os.MkdirAll("json", os.ModePerm)
+	if err != nil {
+		fmt.Println("Error creating directory:", err)
+		return "", err
+	}
+
+	jsonFile, err := os.Create(filePath)
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	defer jsonFile.Close()
+
+	jsonBody, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	_, err = jsonFile.Write(jsonBody)
+	if err != nil {
+		fmt.Println(err)
+		return "", err
+	}
+	return filePath, nil
 }
 
 func UpdateCFSummary(cfDoc *goquery.Document, cfSummary *internal.CFSummary) {
@@ -1251,12 +1093,9 @@ func UpdateCFSummary(cfDoc *goquery.Document, cfSummary *internal.CFSummary) {
 			}
 		}
 		if len(splitTdTexts) == 1 && titleTexts != nil && strings.Contains(titleTexts[0], "単位：") {
-			baseStr := splitTdTexts[0]
-			baseStr = strings.ReplaceAll(baseStr, "(", "")
-			baseStr = strings.ReplaceAll(baseStr, ")", "")
-			splitUnitStrs := strings.Split(baseStr, "：")
-			if len(splitUnitStrs) >= 2 {
-				cfSummary.UnitString = splitUnitStrs[1]
+			formatUnitStr := FormatUnitStr(splitTdTexts[0])
+			if formatUnitStr != "" {
+				cfSummary.UnitString = formatUnitStr
 			}
 		}
 	})
@@ -1281,8 +1120,195 @@ func ValidateCFSummary(cfSummary internal.CFSummary) bool {
 	return false
 }
 
-// TODO: CF HTML 登録処理
-func RegisterCFHTML() {}
+func PrintValidatedSummaryMsg(companyName string, fileName string, summary interface{}, isValid bool) {
+	var summaryType string
 
-// TODO: CF JSON 登録処理
-func RegisterCFJSON() {}
+	switch summary.(type) {
+	case internal.Summary:
+		summaryType = "貸借対照表"
+	case internal.PLSummary:
+		summaryType = "損益計算書"
+	case internal.CFSummary:
+		summaryType = "CF計算書"
+	}
+
+	jsonBody, _ := json.MarshalIndent(summary, "", "  ")
+
+	var detailStr string
+	var validStr string
+	switch isValid {
+	case true:
+		validStr = "有効です⭕️"
+	case false:
+		validStr = "無効です❌"
+		detailStr = fmt.Sprintf("詳細:\n%v\n", string(jsonBody))
+	}
+
+	msg := fmt.Sprintf("「%s」の%sサマリーJSON (%s) は%s %s", companyName, summaryType, fileName, validStr, detailStr)
+	println(msg)
+}
+
+// TODO: 汎用ファイル送信処理
+func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, extension string, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	var fileName string
+	var filePath string
+
+	switch extension {
+	case "json":
+		fileName = fmt.Sprintf("%s.json", fileNamePattern)
+		filePath = fmt.Sprintf("json/%s", fileName)
+	case "html":
+		fileName = fmt.Sprintf("%s.html", fileNamePattern)
+		filePath = fmt.Sprintf("HTML/%s", fileName)
+	}
+
+	// 処理後、ローカルファイルを削除
+	defer func() {
+		err := os.RemoveAll(filePath)
+		if err != nil {
+			fmt.Printf("ローカルファイル削除エラー: %v\n", err)
+			return
+		}
+		// fmt.Printf("%s を削除しました\n", filePath)
+	}()
+
+	// S3 に ファイルを送信 (Key は aws configure で設定しておく)
+	region := os.Getenv("REGION")
+	sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	s3Client := s3.NewFromConfig(sdkConfig)
+	bucketName := os.Getenv("BUCKET_NAME")
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println("open file error: ", err)
+		return
+	}
+	defer func() {
+		err := file.Close()
+		if err != nil {
+			fmt.Println("ローカルファイル close エラー: ", err)
+			return
+		}
+	}()
+
+	splitByHyphen := strings.Split(fileName, "-")
+	if len(splitByHyphen) >= 3 {
+		reportType := splitByHyphen[2] // BS or PL or CF
+		key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, fileName)
+
+		contentType, err := GetContentType(extension)
+		if err != nil {
+			fmt.Println("ContentType 取得エラー: ", err)
+			return
+		}
+
+		// ファイルの存在チェック
+		existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+			Bucket: aws.String(bucketName),
+			Key:    aws.String(key),
+		})
+		if existsFile == nil {
+			_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+				Bucket:      aws.String(bucketName),
+				Key:         aws.String(key),
+				Body:        file,
+				ContentType: aws.String(contentType),
+			})
+			if err != nil {
+				fmt.Println("S3 PutObject error: ", err)
+				return
+			}
+
+			var reportTypeStr string
+			switch reportType {
+			case "BS":
+				reportTypeStr = "貸借対照表"
+			case "PL":
+				reportTypeStr = "損益計算書"
+			case "CF":
+				reportTypeStr = "CF計算書"
+			}
+			uploadDoneMsg := fmt.Sprintf("「%s」の%s%sを登録しました ⭕️ (ファイル名: %s)", companyName, reportTypeStr, extension, key)
+			fmt.Println(uploadDoneMsg)
+		}
+	}
+}
+
+func GetContentType(extension string) (string, error) {
+	switch extension {
+	case "json":
+		return "application/json", nil
+	case "html":
+		return "text/html", nil
+	}
+	return "", errors.New("無効なファイル形式です")
+}
+
+func HandleRegisterJSON(EDINETCode string, companyName string, fileNamePattern string, summary interface{}, wg *sync.WaitGroup) {
+	_, err := CreateJSON(fileNamePattern, summary)
+	if err != nil {
+		fmt.Println("CF JSON ファイル作成エラー: ", err)
+		return
+	}
+	PutFileToS3(EDINETCode, companyName, fileNamePattern, "json", wg)
+}
+
+func FormatUnitStr(baseStr string) string {
+	baseStr = strings.ReplaceAll(baseStr, "(", "")
+	baseStr = strings.ReplaceAll(baseStr, "（", "")
+	baseStr = strings.ReplaceAll(baseStr, ")", "")
+	baseStr = strings.ReplaceAll(baseStr, "）", "")
+	splitUnitStrs := strings.Split(baseStr, "：")
+	if len(splitUnitStrs) >= 2 {
+		return splitUnitStrs[1]
+	}
+	return ""
+}
+
+func FormatHtmlTable(htmlStr string)string{
+  tbPattern := `(?s)<table(.*?)>`
+  tbRe := regexp.MustCompile(tbPattern)
+  tbMatch := tbRe.FindString(htmlStr)
+
+  tbWidthPatternSemicolon := `width(.*?);`
+  tbWidthPatternPt := `width(.*?)pt`
+  tbWidthPatternPx := `width(.*?)px`
+
+  tbWidthReSemicolon := regexp.MustCompile(tbWidthPatternSemicolon)
+  tbWidthRePt := regexp.MustCompile(tbWidthPatternPt)
+  tbWidthRePx := regexp.MustCompile(tbWidthPatternPx)
+
+  tbWidthMatchSemicolon := tbWidthReSemicolon.FindString(tbMatch)
+  tbWidthMatchPt := tbWidthRePt.FindString(tbMatch)
+  tbWidthMatchPx := tbWidthRePx.FindString(tbMatch)
+
+  var newTbStr string
+  if tbWidthMatchSemicolon != "" {
+    newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchSemicolon, "")
+  } else if tbWidthMatchPt != "" {
+    newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchPt, "")
+  } else if tbWidthMatchPx != "" {
+    newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchPx, "")
+  }
+
+  if newTbStr != "" {
+    // <table> タグを入れ替える
+    htmlStr = strings.ReplaceAll(htmlStr, tbMatch, newTbStr)
+  }
+
+  // colgroup の削除
+  colGroupPattern := `(?s)<colgroup(.*?)</colgroup>`
+  colGroupRe := regexp.MustCompile(colGroupPattern)
+  colGroupMatch := colGroupRe.FindString(htmlStr)
+  if colGroupMatch != "" {
+    htmlStr = strings.ReplaceAll(htmlStr, colGroupMatch, "")
+  }
+  return htmlStr
+}
+
