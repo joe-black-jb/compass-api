@@ -38,10 +38,15 @@ var dynamoClient *dynamodb.Client
 
 var tableName string
 
+/* NOTE
+・連結キャッシュフロー計算書:  0105050
+
+*/
+
 // TODO: 売上高 ではなく 営業収益 で計上している企業の PL
 //       売上高と営業収益がどちらか入っていればOK
 // TODO: 営業利益 の部分に 営業損失 とだけ記載してある企業の PL
-// TODO: HTML の table タグの width を消す
+// TODO: HTML は Validate 結果が false でも送信する
 
 /*
 【営業収益、営業利益の場合】
@@ -214,10 +219,12 @@ func GetReports() ([]internal.Result, error) {
 	    Jan: 31   Feb: 28   Mar: 31   Apr: 30   May: 31   Jun: 30
 	    Jul: 31   Aug: 31   Sep: 30   Oct: 31   Nov: 30   Dec: 31
 	*/
+	// ソフトバンクグループ株式会社 2024/06/21 15:21
+
 	// 集計開始日付
-	date := time.Date(2024, time.October, 1, 1, 0, 0, 0, loc)
+	date := time.Date(2024, time.June, 21, 1, 0, 0, 0, loc)
 	// 集計終了日付
-	endDate := time.Date(2024, time.October, 31, 1, 0, 0, 0, loc)
+	endDate := time.Date(2024, time.June, 21, 1, 0, 0, 0, loc)
 	// now := time.Now()
 	for date.Before(endDate) || date.Equal(endDate) {
 		fmt.Println(fmt.Sprintf("%s の処理を開始します⭐️", date.Format("2006-01-02")))
@@ -365,7 +372,6 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	soloCFIFRSRe := regexp.MustCompile(soloCFIFRSPattern)
 	soloCFIFRSMattches := soloCFIFRSRe.FindString(string(body))
 
-
 	// 貸借対照表HTMLをローカルに作成
 	doc, err := CreateHTML("BS", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
 	if err != nil {
@@ -411,20 +417,24 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	isCFSummaryValid := ValidateCFSummary(cfSummary)
 
 	// CF計算書バリデーション後
+	var putFileWg sync.WaitGroup
+	putFileWg.Add(2)
+	// CF HTML は バリデーションの結果に関わらず送信
+	// S3 に CF HTML 送信 (HTML はスクレイピング処理があるので S3 への送信処理を個別で実行)
+	go PutFileToS3(EDINETCode, companyName, cfFileNamePattern, "html", &putFileWg)
 	if isCFSummaryValid {
-		var putFileWg sync.WaitGroup
-		putFileWg.Add(2)
-		// S3 に HTML 送信 (HTML はスクレイピング処理があるので S3 への送信処理を個別で実行)
-		go PutFileToS3(EDINETCode, companyName, cfFileNamePattern, "html", &putFileWg)
 		// S3 に JSON 送信
 		go HandleRegisterJSON(EDINETCode, companyName, cfFileNamePattern, cfSummary, &putFileWg)
-		putFileWg.Wait()
 	} else {
+		putFileWg.Done()
+		///// ログを出さない場合はコメントアウト /////
 		PrintValidatedSummaryMsg(companyName, cfFileNamePattern, cfSummary, isCFSummaryValid)
+		////////////////////////////////////////
 	}
+	putFileWg.Wait()
 
 	// 貸借対照表バリデーションなしバージョン
-	_ , err = CreateJSON(BSFileNamePattern, summary)
+	_, err = CreateJSON(BSFileNamePattern, summary)
 	if err != nil {
 		fmt.Println("BS JSON ファイル作成エラー: ", err)
 		return
@@ -437,22 +447,23 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	go PutFileToS3(EDINETCode, companyName, BSFileNamePattern, "html", &putBsWg)
 	putBsWg.Wait()
 
-
 	// 損益計算書バリデーション後
+	var putPlWg sync.WaitGroup
+	putPlWg.Add(2)
+	// PL HTML 送信 (バリデーション結果に関わらず)
+	go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "html", &putPlWg)
 	if isPLSummaryValid {
-		_ , err = CreateJSON(PLFileNamePattern, plSummary)
+		_, err = CreateJSON(PLFileNamePattern, plSummary)
 		if err != nil {
 			fmt.Println("PL JSON ファイル作成エラー: ", err)
 			return
 		}
-		var putPlWg sync.WaitGroup
-		putPlWg.Add(2)
 		// PL JSON 送信
 		go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "json", &putPlWg)
-		// PL HTML 送信
-		go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "html", &putPlWg)
-		putPlWg.Wait()
+	} else {
+		wg.Done()
 	}
+	putPlWg.Wait()
 
 	// XBRL ファイルの削除
 	xbrlDir := filepath.Join("XBRL", docID)
@@ -546,6 +557,11 @@ func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental
 }
 
 func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, fundamental *internal.Fundamental) {
+	// 営業収益合計の設定が終わったかどうか管理するフラグ
+	isOperatingRevenueDone := false
+	// 営業費用合計の設定が終わったかどうか管理するフラグ
+	isOperatingCostDone := false
+
 	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
 		tdText := s.Find("td").Text()
 		tdText = strings.TrimSpace(tdText)
@@ -609,7 +625,7 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, funda
 				fundamental.OperatingProfit = currentIntValue
 			}
 			if titleName == "営業損失（△）" {
-				fmt.Println("営業損失とだけ書いてあります")
+				// fmt.Println("営業損失とだけ書いてあります")
 				if plSummary.OperatingProfit.Previous == 0 {
 					plSummary.OperatingProfit.Previous = previousIntValue
 				}
@@ -619,6 +635,30 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, funda
 				// fundamental
 				if fundamental.OperatingProfit == 0 {
 					fundamental.OperatingProfit = currentIntValue
+				}
+			}
+			// 営業収益の後に営業収益合計がある場合は上書き
+			if strings.Contains(titleName, "営業収益") && !isOperatingRevenueDone {
+				plSummary.HasOperatingRevenue = true
+				plSummary.OperatingRevenue.Previous = previousIntValue
+				plSummary.OperatingRevenue.Current = currentIntValue
+				// fundamental
+				fundamental.HasOperatingRevenue = true
+				fundamental.OperatingRevenue = currentIntValue
+				if titleName == "営業収益合計" {
+					isOperatingRevenueDone = true
+				}
+			}
+			// 営業費用の後に営業費用合計がある場合は上書き
+			if strings.Contains(titleName, "営業費用") && !isOperatingCostDone {
+				plSummary.HasOperatingCost = true
+				plSummary.OperatingCost.Previous = previousIntValue
+				plSummary.OperatingCost.Current = currentIntValue
+				// fundamental
+				fundamental.HasOperatingCost = true
+				fundamental.OperatingCost = currentIntValue
+				if titleName == "営業費用合計" {
+					isOperatingCostDone = true
 				}
 			}
 		}
@@ -638,37 +678,32 @@ func ValidateSummary(summary internal.Summary) bool {
 	if summary.CompanyName != "" &&
 		summary.PeriodStart != "" &&
 		summary.PeriodEnd != "" &&
-		summary.CurrentAssets.Previous != 0 &&
-		summary.CurrentAssets.Current != 0 &&
-		summary.TangibleAssets.Previous != 0 &&
-		summary.TangibleAssets.Current != 0 &&
-		summary.IntangibleAssets.Previous != 0 &&
-		summary.IntangibleAssets.Current != 0 &&
-		summary.InvestmentsAndOtherAssets.Previous != 0 &&
-		summary.InvestmentsAndOtherAssets.Current != 0 &&
-		summary.CurrentLiabilities.Previous != 0 &&
-		summary.CurrentLiabilities.Current != 0 &&
-		summary.FixedLiabilities.Previous != 0 &&
-		summary.FixedLiabilities.Current != 0 &&
-		summary.NetAssets.Previous != 0 &&
-		summary.NetAssets.Current != 0 {
+		(summary.CurrentAssets.Previous != 0 || summary.CurrentAssets.Current != 0) &&
+		(summary.TangibleAssets.Previous != 0 || summary.TangibleAssets.Current != 0) &&
+		(summary.IntangibleAssets.Previous != 0 || summary.IntangibleAssets.Current != 0) &&
+		(summary.InvestmentsAndOtherAssets.Previous != 0 || summary.InvestmentsAndOtherAssets.Current != 0) &&
+		(summary.CurrentLiabilities.Previous != 0 || summary.CurrentLiabilities.Current != 0) &&
+		(summary.FixedLiabilities.Previous != 0 || summary.FixedLiabilities.Current != 0) &&
+		(summary.NetAssets.Previous != 0 || summary.NetAssets.Current != 0) {
 		return true
 	}
 	return false
 }
 
 func ValidatePLSummary(plSummary internal.PLSummary) bool {
-	if plSummary.CompanyName != "" &&
+	if plSummary.HasOperatingRevenue && plSummary.HasOperatingCost {
+		// 営業費用がある場合、営業費用と営業利益があればいい
+		if (plSummary.OperatingRevenue.Previous != 0 || plSummary.OperatingRevenue.Current != 0) &&
+			(plSummary.OperatingCost.Previous != 0 || plSummary.OperatingCost.Current != 0) {
+			return true
+		}
+	} else if plSummary.CompanyName != "" &&
 		plSummary.PeriodStart != "" &&
 		plSummary.PeriodEnd != "" &&
-		plSummary.CostOfGoodsSold.Previous != 0 &&
-		plSummary.CostOfGoodsSold.Current != 0 &&
-		plSummary.SGAndA.Previous != 0 &&
-		plSummary.SGAndA.Current != 0 &&
-		plSummary.Sales.Previous != 0 &&
-		plSummary.Sales.Current != 0 &&
-		plSummary.OperatingProfit.Previous != 0 &&
-		plSummary.OperatingProfit.Current != 0 {
+		(plSummary.CostOfGoodsSold.Previous != 0 || plSummary.CostOfGoodsSold.Current != 0) &&
+		(plSummary.SGAndA.Previous != 0 || plSummary.SGAndA.Current != 0) &&
+		(plSummary.Sales.Previous != 0 || plSummary.Sales.Current != 0) &&
+		(plSummary.OperatingProfit.Previous != 0 || plSummary.OperatingProfit.Current != 0) {
 		return true
 	}
 	return false
@@ -823,13 +858,26 @@ func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fun
 			fmt.Println(err)
 			return
 		}
+		///// ログを出さない場合はコメントアウト /////
 		uploadDoneMsg := fmt.Sprintf("「%s」のファンダメンタルズJSONを登録しました ⭕️ (ファイル名: %s)", fundamental.CompanyName, key)
 		fmt.Println(uploadDoneMsg)
+		////////////////////////////////////////
 	}
 }
 
 func ValidateFundamentals(fundamental internal.Fundamental) bool {
-	if fundamental.CompanyName != "" &&
+	if fundamental.HasOperatingRevenue && fundamental.HasOperatingCost {
+		if fundamental.CompanyName != "" &&
+			fundamental.PeriodStart != "" &&
+			fundamental.PeriodEnd != "" &&
+			fundamental.OperatingProfit != 0 &&
+			fundamental.Liabilities != 0 &&
+			fundamental.NetAssets != 0 &&
+			fundamental.OperatingRevenue != 0 &&
+			fundamental.OperatingCost != 0 {
+			return true
+		}
+	} else if fundamental.CompanyName != "" &&
 		fundamental.PeriodStart != "" &&
 		fundamental.PeriodEnd != "" &&
 		fundamental.Sales != 0 &&
@@ -844,16 +892,17 @@ func ValidateFundamentals(fundamental internal.Fundamental) bool {
 /*
 HTMLをパースしローカルに保存する
 @params
-	fileType:                BS もしくは PL
-	body:                    ファイルの中身
-	consolidatedBSMatches:   連結貸借対照表データが入っているタグの中身
-	soloBSMatches:           貸借対照表データが入っているタグの中身
-	consolidatedPLMatches:   連結損益計算書データが入っているタグの中身
-	soloPLMatches:           損益計算書データが入っているタグの中身
-  BSFileNamePattern:       BSファイル名パターン
-	PLFileNamePattern:       PLファイル名パターン
+
+		fileType:                BS もしくは PL
+		body:                    ファイルの中身
+		consolidatedBSMatches:   連結貸借対照表データが入っているタグの中身
+		soloBSMatches:           貸借対照表データが入っているタグの中身
+		consolidatedPLMatches:   連結損益計算書データが入っているタグの中身
+		soloPLMatches:           損益計算書データが入っているタグの中身
+	  BSFileNamePattern:       BSファイル名パターン
+		PLFileNamePattern:       PLファイル名パターン
 */
-func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern string)(*goquery.Document, error){
+func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern string) (*goquery.Document, error) {
 	// エスケープ文字をデコード
 	var unescapedStr string
 
@@ -869,7 +918,7 @@ func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMa
 	}
 
 	// PL の場合
-	if (fileType == "PL") {
+	if fileType == "PL" {
 		if consolidatedPLMatches == "" && soloPLMatches == "" {
 			return nil, errors.New("parse 対象の損益計算書データがありません")
 		} else if consolidatedPLMatches != "" {
@@ -883,20 +932,20 @@ func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMa
 	// 特定のエンティティをさらに手動でデコード
 	unescapedStr = strings.ReplaceAll(unescapedStr, "&apos;", "'")
 
-  // HTMLデータを加工
-  unescapedStr = FormatHtmlTable(unescapedStr)
+	// HTMLデータを加工
+	unescapedStr = FormatHtmlTable(unescapedStr)
 
 	// html ファイルとして書き出す
 	HTMLDirName := "HTML"
 	var fileName string
 	var filePath string
 
-	if (fileType == "BS") {
+	if fileType == "BS" {
 		fileName = fmt.Sprintf("%s.html", BSFileNamePattern)
 		filePath = filepath.Join(HTMLDirName, fileName)
 	}
 
-	if (fileType == "PL") {
+	if fileType == "PL" {
 		fileName = fmt.Sprintf("%s.html", PLFileNamePattern)
 		filePath = filepath.Join(HTMLDirName, fileName)
 	}
@@ -972,7 +1021,7 @@ func CreateCFHTML(cfFileNamePattern, body string, consolidatedCFMattches string,
 	// デコードしきれていない文字は replace
 	// 特定のエンティティをさらに手動でデコード
 	unescapedMatch = strings.ReplaceAll(unescapedMatch, "&apos;", "'")
-  unescapedMatch = FormatHtmlTable(unescapedMatch)
+	unescapedMatch = FormatHtmlTable(unescapedMatch)
 
 	HTMLDirName := "HTML"
 	cfHTMLFileName := fmt.Sprintf("%s.html", cfFileNamePattern)
@@ -1105,16 +1154,11 @@ func ValidateCFSummary(cfSummary internal.CFSummary) bool {
 	if cfSummary.CompanyName != "" &&
 		cfSummary.PeriodStart != "" &&
 		cfSummary.PeriodEnd != "" &&
-		cfSummary.OperatingCF.Previous != 0 &&
-		cfSummary.OperatingCF.Current != 0 &&
-		cfSummary.InvestingCF.Previous != 0 &&
-		cfSummary.InvestingCF.Current != 0 &&
-		cfSummary.FinancingCF.Previous != 0 &&
-		cfSummary.FinancingCF.Current != 0 &&
-		cfSummary.StartCash.Previous != 0 &&
-		cfSummary.StartCash.Current != 0 &&
-		cfSummary.EndCash.Previous != 0 &&
-		cfSummary.EndCash.Current != 0 {
+		(cfSummary.OperatingCF.Previous != 0 || cfSummary.OperatingCF.Current != 0) &&
+		(cfSummary.InvestingCF.Previous != 0 || cfSummary.InvestingCF.Current != 0) &&
+		(cfSummary.FinancingCF.Previous != 0 || cfSummary.FinancingCF.Current != 0) &&
+		(cfSummary.StartCash.Previous != 0 || cfSummary.StartCash.Current != 0) &&
+		(cfSummary.EndCash.Previous != 0 || cfSummary.EndCash.Current != 0) {
 		return true
 	}
 	return false
@@ -1225,6 +1269,7 @@ func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, 
 				return
 			}
 
+			///// ログを出さない場合はコメントアウト /////
 			var reportTypeStr string
 			switch reportType {
 			case "BS":
@@ -1236,6 +1281,7 @@ func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, 
 			}
 			uploadDoneMsg := fmt.Sprintf("「%s」の%s%sを登録しました ⭕️ (ファイル名: %s)", companyName, reportTypeStr, extension, key)
 			fmt.Println(uploadDoneMsg)
+			////////////////////////////////////////
 		}
 	}
 }
@@ -1271,44 +1317,43 @@ func FormatUnitStr(baseStr string) string {
 	return ""
 }
 
-func FormatHtmlTable(htmlStr string)string{
-  tbPattern := `(?s)<table(.*?)>`
-  tbRe := regexp.MustCompile(tbPattern)
-  tbMatch := tbRe.FindString(htmlStr)
+func FormatHtmlTable(htmlStr string) string {
+	tbPattern := `(?s)<table(.*?)>`
+	tbRe := regexp.MustCompile(tbPattern)
+	tbMatch := tbRe.FindString(htmlStr)
 
-  tbWidthPatternSemicolon := `width(.*?);`
-  tbWidthPatternPt := `width(.*?)pt`
-  tbWidthPatternPx := `width(.*?)px`
+	tbWidthPatternSemicolon := `width(.*?);`
+	tbWidthPatternPt := `width(.*?)pt`
+	tbWidthPatternPx := `width(.*?)px`
 
-  tbWidthReSemicolon := regexp.MustCompile(tbWidthPatternSemicolon)
-  tbWidthRePt := regexp.MustCompile(tbWidthPatternPt)
-  tbWidthRePx := regexp.MustCompile(tbWidthPatternPx)
+	tbWidthReSemicolon := regexp.MustCompile(tbWidthPatternSemicolon)
+	tbWidthRePt := regexp.MustCompile(tbWidthPatternPt)
+	tbWidthRePx := regexp.MustCompile(tbWidthPatternPx)
 
-  tbWidthMatchSemicolon := tbWidthReSemicolon.FindString(tbMatch)
-  tbWidthMatchPt := tbWidthRePt.FindString(tbMatch)
-  tbWidthMatchPx := tbWidthRePx.FindString(tbMatch)
+	tbWidthMatchSemicolon := tbWidthReSemicolon.FindString(tbMatch)
+	tbWidthMatchPt := tbWidthRePt.FindString(tbMatch)
+	tbWidthMatchPx := tbWidthRePx.FindString(tbMatch)
 
-  var newTbStr string
-  if tbWidthMatchSemicolon != "" {
-    newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchSemicolon, "")
-  } else if tbWidthMatchPt != "" {
-    newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchPt, "")
-  } else if tbWidthMatchPx != "" {
-    newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchPx, "")
-  }
+	var newTbStr string
+	if tbWidthMatchSemicolon != "" {
+		newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchSemicolon, "")
+	} else if tbWidthMatchPt != "" {
+		newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchPt, "")
+	} else if tbWidthMatchPx != "" {
+		newTbStr = strings.ReplaceAll(tbMatch, tbWidthMatchPx, "")
+	}
 
-  if newTbStr != "" {
-    // <table> タグを入れ替える
-    htmlStr = strings.ReplaceAll(htmlStr, tbMatch, newTbStr)
-  }
+	if newTbStr != "" {
+		// <table> タグを入れ替える
+		htmlStr = strings.ReplaceAll(htmlStr, tbMatch, newTbStr)
+	}
 
-  // colgroup の削除
-  colGroupPattern := `(?s)<colgroup(.*?)</colgroup>`
-  colGroupRe := regexp.MustCompile(colGroupPattern)
-  colGroupMatch := colGroupRe.FindString(htmlStr)
-  if colGroupMatch != "" {
-    htmlStr = strings.ReplaceAll(htmlStr, colGroupMatch, "")
-  }
-  return htmlStr
+	// colgroup の削除
+	colGroupPattern := `(?s)<colgroup(.*?)</colgroup>`
+	colGroupRe := regexp.MustCompile(colGroupPattern)
+	colGroupMatch := colGroupRe.FindString(htmlStr)
+	if colGroupMatch != "" {
+		htmlStr = strings.ReplaceAll(htmlStr, colGroupMatch, "")
+	}
+	return htmlStr
 }
-

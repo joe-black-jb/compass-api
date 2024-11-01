@@ -242,25 +242,33 @@ type Summary struct {
 }
 
 type PLSummary struct {
-	CompanyName     string     `json:"company_name"`
-	PeriodStart     string     `json:"period_start"`
-	PeriodEnd       string     `json:"period_end"`
-	UnitString      string     `json:"unit_string"`
-	CostOfGoodsSold TitleValue `json:"cost_of_goods_sold"` // 売上原価
-	SGAndA          TitleValue `json:"sg_and_a"`           // 販売費及び一般管理費
-	Sales           TitleValue `json:"sales"`              // 売上高
-	OperatingProfit TitleValue `json:"operating_profit"`   // 営業利益
+	CompanyName         string     `json:"company_name"`
+	PeriodStart         string     `json:"period_start"`
+	PeriodEnd           string     `json:"period_end"`
+	UnitString          string     `json:"unit_string"`
+	CostOfGoodsSold     TitleValue `json:"cost_of_goods_sold"`    // 売上原価
+	SGAndA              TitleValue `json:"sg_and_a"`              // 販売費及び一般管理費
+	Sales               TitleValue `json:"sales"`                 // 売上高
+	OperatingProfit     TitleValue `json:"operating_profit"`      // 営業利益
+	OperatingRevenue    TitleValue `json:"operating_revenue"`     // 営業収益
+	HasOperatingRevenue bool       `json:"has_operating_revenue"` // 営業収益が計上されているかどうか
+	OperatingCost       TitleValue `json:"operating_cost"`        // 営業費用 (一部の企業で使用)
+	HasOperatingCost    bool       `json:"has_operating_cost"`    // 営業費用が計上されているかどうか
 	// OperatingLoss             TitleValue `json:"operating_loss"` // 営業損失
 }
 
 type Fundamental struct {
-	CompanyName     string `json:"company_name"`
-	PeriodStart     string `json:"period_start"`
-	PeriodEnd       string `json:"period_end"`
-	Sales           int    `json:"sales"`
-	OperatingProfit int    `json:"operating_profit"`
-	Liabilities     int    `json:"liabilities"`
-	NetAssets       int    `json:"net_assets"`
+	CompanyName         string `json:"company_name"`
+	PeriodStart         string `json:"period_start"`
+	PeriodEnd           string `json:"period_end"`
+	Sales               int    `json:"sales"`
+	OperatingProfit     int    `json:"operating_profit"`
+	OperatingRevenue    int    `json:"operating_revenue"`     // 営業収益
+	HasOperatingRevenue bool   `json:"has_operating_revenue"` // 営業収益が計上されているかどうか
+	OperatingCost       int    `json:"operating_cost"`        // 営業費用 (一部の企業で使用)
+	HasOperatingCost    bool   `json:"has_operating_cost"`    // 営業費用が計上されているかどうか
+	Liabilities         int    `json:"liabilities"`
+	NetAssets           int    `json:"net_assets"`
 }
 
 type CFSummary struct {
