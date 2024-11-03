@@ -63,7 +63,7 @@ func handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.API
   companyId := req.PathParameters["companyId"]
 
   if companyId != "" {
-    fmt.Println("search company route")
+    fmt.Println("get company route")
 		return api.GetCompany(req, dynamoClient)
   }
 
@@ -72,7 +72,7 @@ func handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.API
 	case "companies":
 		fmt.Println("companies route")
 		return api.GetCompanies(req, dynamoClient)
-	case "search/companies":
+	case "search":
 		fmt.Println("search companies route")
 		return api.SearchCompaniesByName(req, dynamoClient)
 	// case "company":
