@@ -57,10 +57,14 @@ var tableName string
 */
 
 func init() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file err: ", err)
-		return
+	env := os.Getenv("ENV")
+
+	if env == "local" {
+		err := godotenv.Load()
+		if err != nil {
+			log.Fatal("Error loading .env file err: ", err)
+			return
+		}
 	}
 	EDINETAPIKey = os.Getenv("EDINET_API_KEY")
 	if EDINETAPIKey == "" {

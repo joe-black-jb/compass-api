@@ -108,21 +108,22 @@ func Router() {
 	// config.AllowOrigins = []string{"http://localhost:3000"}
 	// router.Use(cors.New(config))
 
-	router.GET("/companies", GetCompanies)
-	router.GET("/titles", GetTitles)
+	// // gin を使用しない場合はコメントアウト
+	// router.GET("/companies", GetCompanies)
+	// router.GET("/titles", GetTitles)
 	// router.GET("/company/:id/with-title", GetCompanyTitles)
 	// 一時的にコメントアウト↓
-	router.GET("/company/:id", GetCompany)
-	router.PUT("/company/:id/title/:titleId", UpdateCompanyTitles)
-	router.PUT("/title/:id", UpdateTitle)
-	router.GET("/categories", GetCategories)
-	router.POST("/title", CreateTitle)
-	router.DELETE("/title/:id", DeleteTitle)
-	router.POST("/register", RegisterUser)
-	router.POST("/login", Login)
-	router.GET("/reports", GetReports)
-	router.GET("/fundamentals", GetFundamentals)
-	router.GET("/search/companies", SearchCompaniesByName)
+	// router.GET("/company/:id", GetCompany)
+	// router.PUT("/company/:id/title/:titleId", UpdateCompanyTitles)
+	// router.PUT("/title/:id", UpdateTitle)
+	// router.GET("/categories", GetCategories)
+	// router.POST("/title", CreateTitle)
+	// router.DELETE("/title/:id", DeleteTitle)
+	// router.POST("/register", RegisterUser)
+	// router.POST("/login", Login)
+	// router.GET("/reports", GetReports)
+	// router.GET("/fundamentals", GetFundamentals)
+	// router.GET("/search/companies", SearchCompaniesByName)
 
 	// 認証が必要なエンドポイント
 	auth := router.Group("/")

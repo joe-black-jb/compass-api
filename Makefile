@@ -19,3 +19,5 @@ xbrl:
 delS3:
 	go run ./S3/deleteS3.go
 
+deploy:
+	sh ./scripts/deploy.sh

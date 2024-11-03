@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -32,10 +34,14 @@ var dynamoClient *dynamodb.Client
 var s3Client *s3.Client
 
 func init() {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file err: ", err)
-		return
+	env := os.Getenv("ENV")
+
+	if env == "local" {
+		err := godotenv.Load()
+		if err != nil {
+			log.Fatal("Error loading .env file err: ", err)
+			return
+		}
 	}
 	region := os.Getenv("REGION")
 	cfg, cfgErr := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
@@ -47,13 +53,17 @@ func init() {
 	dynamoClient = dynamodb.NewFromConfig(cfg)
 }
 
-func GetCompanies(c *gin.Context) {
-	// fmt.Println("==== ⭐️ GetCompanies ⭐️ ====")
+// TODO: バッチでDynamoDBの中身をS3に保存する
+// TODO: Dynamo Stream で DBの更新をトリガーにデータをS3に流す機能
+// TODO: GetCompanies を DB からではなく S3 から取るようにする
+func GetCompanies(req events.APIGatewayProxyRequest, dynamoClient *dynamodb.Client) (events.APIGatewayProxyResponse, error) {
+	fmt.Println("==== GetCompanies ====")
 	var companies []internal.Company
 	// pagination 用
 	var lastEvaluatedKey map[string]types.AttributeValue
 
-	limit := c.Query("limit")
+	limit := req.QueryStringParameters["limit"]
+
 	if limit == "" {
 		for {
 			scanInput := &dynamodb.ScanInput{
@@ -66,7 +76,10 @@ func GetCompanies(c *gin.Context) {
 			result, err := dynamoClient.Scan(context.TODO(), scanInput)
 			if err != nil {
 				fmt.Println("scan err: ", err)
-				c.JSON(http.StatusInternalServerError, err)
+				return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+					Body:       "dynamoClient.Scan Error",
+				}, err
 			}
 
 			var batch []internal.Company
@@ -74,7 +87,10 @@ func GetCompanies(c *gin.Context) {
 			err = attributevalue.UnmarshalListOfMaps(result.Items, &batch)
 			if err != nil {
 				fmt.Println("unMarshal err: ", err)
-				c.JSON(http.StatusInternalServerError, err)
+				return events.APIGatewayProxyResponse{
+					StatusCode: http.StatusInternalServerError,
+					Body:       "attributevalue.UnmarshalListOfMaps Error",
+				}, err
 			}
 
 			companies = append(companies, batch...)
@@ -87,7 +103,10 @@ func GetCompanies(c *gin.Context) {
 	} else {
 		limitInt, err := strconv.Atoi(limit)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, err)
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "strconv.Atoi Error",
+			}, err
 		}
 		limitInt32 := int32(limitInt)
 		scanInput := &dynamodb.ScanInput{
@@ -97,7 +116,10 @@ func GetCompanies(c *gin.Context) {
 		result, err := dynamoClient.Scan(context.TODO(), scanInput)
 		if err != nil {
 			fmt.Println("scan err: ", err)
-			c.JSON(http.StatusInternalServerError, err)
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "dynamoClient.Scan Error",
+			}, err
 		}
 
 		var batch []internal.Company
@@ -105,63 +127,108 @@ func GetCompanies(c *gin.Context) {
 		err = attributevalue.UnmarshalListOfMaps(result.Items, &batch)
 		if err != nil {
 			fmt.Println("unMarshal err: ", err)
-			c.JSON(http.StatusInternalServerError, err)
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "attributevalue.UnmarshalListOfMaps Error",
+			}, err
 		}
 		companies = append(companies, batch...)
 	}
 
-	// // companies のスライスを JSON にシリアライズ
-	// body, err := json.Marshal(companies)
-	// if err != nil {
-	// 	fmt.Println("failed to marshal companies to json: ", err)
-	// 	c.JSON(http.StatusInternalServerError, err)
-	// }
-	c.IndentedJSON(http.StatusOK, companies)
+	// companies のスライスを JSON にシリアライズ
+	body, err := json.Marshal(companies)
+	if err != nil {
+		fmt.Println("failed to marshal companies to json: ", err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "json.Marshal Error",
+		}, err
+	}
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       string(body),
+		Headers: map[string]string{
+			"Content-type": "application/json",
+		},
+	}, nil
+
+	// // gin の場合
+	// c.IndentedJSON(http.StatusOK, companies)
 }
 
-func GetCompany(c *gin.Context) {
-	// fmt.Println("==== ⭐️ GetCompany ⭐️ ====")
+func GetCompany(req events.APIGatewayProxyRequest, dynamoClient *dynamodb.Client) (events.APIGatewayProxyResponse, error) {
+	fmt.Println("==== GetCompany ====")
 
-	id := c.Param("id")
-	// fmt.Println("id: ", id)
+	// API Gateway で /{companyId} を指定する
+	companyId := req.PathParameters["companyId"]
+
 	var company internal.Company
 
-	companyId, err := attributevalue.Marshal(company.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, err)
-	}
-	fmt.Println("companyId: ", companyId)
+	// companyId, err := attributevalue.Marshal(company.ID)
+	// if err != nil {
+	// 	c.JSON(http.StatusInternalServerError, err)
+	// }
+	// fmt.Println("companyId: ", companyId)
 
 	getItemInput := &dynamodb.GetItemInput{
 		TableName: aws.String("compass_companies"),
 		Key: map[string]types.AttributeValue{
-			"id": &types.AttributeValueMemberS{Value: id}, // 取得したい id の値を指定
+			"id": &types.AttributeValueMemberS{Value: companyId}, // 取得したい id の値を指定
 		},
 	}
 	getItemOutput, err := dynamoClient.GetItem(context.TODO(), getItemInput)
 	if err != nil {
 		getItemNgMsg := fmt.Sprintf("「%s」getItem error: %v", company.Name, err)
 		fmt.Println(getItemNgMsg)
-		c.JSON(http.StatusInternalServerError, err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "dynamoClient.GetItem Error",
+		}, err
 	}
 	fmt.Println("getItemOutput ⭐️: ", getItemOutput)
 	err = attributevalue.UnmarshalMap(getItemOutput.Item, &company)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "attributevalue.UnmarshalMap Error",
+		}, err
 	}
-	c.IndentedJSON(http.StatusOK, company)
+	body, err := json.MarshalIndent(company, "", "  ")
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       string(body),
+	}, nil
 }
 
-func SearchCompaniesByName(c *gin.Context) {
-	companyName := c.Query("companyName")
+func SearchCompaniesByName(req events.APIGatewayProxyRequest, dynamoClient *dynamodb.Client) (events.APIGatewayProxyResponse, error) {
+	companyName := req.QueryStringParameters["companyName"]
 	if companyName == "" {
-		c.IndentedJSON(http.StatusInternalServerError, "企業名を指定してください")
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "企業名を指定してください",
+		}, errors.New("企業名を指定してください")
 	}
 	companies, err := ScanCompaniesByName(dynamoClient, "compass_companies", companyName)
 	if err != nil {
-		c.IndentedJSON(http.StatusInternalServerError, err)
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "DynamoDB Scan Error",
+		}, err
 	}
-	c.IndentedJSON(http.StatusOK, companies)
+	body, err := json.MarshalIndent(companies, "", "  ")
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "json.MarshalIndent Error",
+		}, err
+	}
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       string(body),
+		Headers: map[string]string{
+			"Content-type": "application/json",
+		},
+	}, nil
 }
 
 func GetTitles(c *gin.Context) {
@@ -519,10 +586,12 @@ func AuthUser(c *gin.Context) {
 - S3 から EDINETコード 配下にある BS データが記載された HTML 一覧を取得する
 - HTML の中身を string で返してフロントで parse する
 */
-func GetReports(c *gin.Context) {
-	EDINETCode := c.Query("EDINETCode")
-	reportType := c.Query("reportType")
-	extension := c.Query("extension")
+func GetReports(req events.APIGatewayProxyRequest, client *dynamodb.Client) (events.APIGatewayProxyResponse, error) {
+	EDINETCode := req.QueryStringParameters["EDINETCode"]
+	reportType := req.QueryStringParameters["reportType"]
+	extension := req.QueryStringParameters["extension"]
+
+	fmt.Println("EDINETCode ⭐️: ", EDINETCode)
 
 	// S3 から BS HTML 一覧を取得
 	bucketName := os.Getenv("BUCKET_NAME")
@@ -587,18 +656,35 @@ func GetReports(c *gin.Context) {
 		body, err := io.ReadAll(result.Body)
 		if err != nil {
 			fmt.Println("io.ReadAll err: ", err)
-			c.JSON(http.StatusInternalServerError, err)
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "io.ReadAll Error",
+			}, err
 		}
 		var data internal.ReportData
 		data.FileName = key
 		data.Data = string(body)
 		reportData = append(reportData, data)
 	}
-	c.IndentedJSON(http.StatusOK, reportData)
+	body, err := json.MarshalIndent(reportData, "", "  ")
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "json.MarshalIndent Error",
+		}, err
+	}
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       string(body),
+		Headers: map[string]string{
+			"Content-type": "application/json",
+		},
+	}, nil
 }
 
-func GetFundamentals(c *gin.Context) {
-	EDINETCode := c.Query("EDINETCode")
+func GetFundamentals(req events.APIGatewayProxyRequest, client *dynamodb.Client) (events.APIGatewayProxyResponse, error) {
+	EDINETCode := req.QueryStringParameters["EDINETCode"]
+
 	// periodStart := c.Query("periodStart")
 
 	// S3 から BS HTML 一覧を取得
@@ -633,20 +719,42 @@ func GetFundamentals(c *gin.Context) {
 		})
 		if err != nil {
 			fmt.Println("s3 getObject err: ", err)
-			return
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "s3Client.GetObject Error",
+			}, err
 		}
 		body, err := io.ReadAll(result.Body)
 		if err != nil {
 			fmt.Println("getObject io.ReadAll err: ", err)
-			return
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "io.ReadAll Error",
+			}, err
 		}
 		fmt.Println("string(body): ", string(body))
 		err = json.Unmarshal(body, &fundamental)
 		if err != nil {
 			fmt.Println("s3 getObject Unmarshal err: ", err)
-			return
+			return events.APIGatewayProxyResponse{
+				StatusCode: http.StatusInternalServerError,
+				Body:       "json.Unmarshal Error",
+			}, err
 		}
 		fundamentals = append(fundamentals, fundamental)
 	}
-	c.IndentedJSON(http.StatusOK, fundamentals)
+	body, err := json.MarshalIndent(fundamentals, "", "  ")
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "json.MarshalIndent Error",
+		}, err
+	}
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       string(body),
+		Headers: map[string]string{
+			"Content-type": "application/json",
+		},
+	}, nil
 }

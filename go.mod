@@ -6,16 +6,16 @@ toolchain go1.23.2
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.0
+	github.com/aws/aws-lambda-go v1.47.0
 	github.com/aws/aws-sdk-go-v2 v1.32.2
 	github.com/aws/aws-sdk-go-v2/config v1.28.0
-	github.com/aws/aws-sdk-go-v2/credentials v1.17.41
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.15.3
-	github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression v1.7.38
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.36.2
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.66.0
 	github.com/gin-contrib/cors v1.7.2
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v4 v4.5.0
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/crypto v0.27.0
 	gorm.io/driver/mysql v1.5.6
@@ -26,6 +26,7 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.6 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.17.41 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.17 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.21 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.21 // indirect
@@ -52,7 +53,6 @@ require (
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect

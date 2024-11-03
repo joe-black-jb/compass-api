@@ -16,10 +16,15 @@ import (
 
 func main() {
 	start := time.Now()
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading .env file err: ", err)
-		return
+
+	env := os.Getenv("ENV")
+
+	if env == "local" {
+		err := godotenv.Load()
+		if err != nil {
+			log.Fatal("Error loading .env file err: ", err)
+			return
+		}
 	}
 	region := os.Getenv("REGION")
 	sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
