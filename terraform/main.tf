@@ -1,3 +1,4 @@
+######### Dynamo DB テーブルは一度作成したらコメントアウト #########
 resource "aws_dynamodb_table" "compass-dynamodb-table" {
   name           = "compass_companies"
   billing_mode   = "PAY_PER_REQUEST"
