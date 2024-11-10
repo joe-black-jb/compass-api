@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/joe-black-jb/compass-api/internal"
+	"golang.org/x/text/width"
 )
 
 func ConvertTitleBody(title *internal.Title, reqBody *internal.CreateTitleBody) (errors []string, ok bool) {
@@ -153,34 +156,84 @@ func QueryByName(svc *dynamodb.Client, tableName string, companyName string, edi
 }
 
 func ScanCompaniesByName(svc *dynamodb.Client, tableName string, companyName string) ([]internal.Company, error) {
-	// フィルタ式とプレースホルダの設定
-	filterExpression := "contains(#name, :companyName)"
-	expressionAttributeNames := map[string]string{
-		"#name": "name",
-	}
-	expressionAttributeValues := map[string]types.AttributeValue{
-		":companyName": &types.AttributeValueMemberS{Value: companyName},
-	}
-
-	// Scan入力パラメータの設定
-	input := &dynamodb.ScanInput{
-		TableName:                 aws.String(tableName), // テーブル名を設定
-		FilterExpression:          aws.String(filterExpression),
-		ExpressionAttributeNames:  expressionAttributeNames,
-		ExpressionAttributeValues: expressionAttributeValues,
+	targetNames := []string{companyName}
+	// 半角文字の存在チェック
+	halfWidthPattern := `[a-zA-Z0-9]`
+	re := regexp.MustCompile(halfWidthPattern)
+	if re.MatchString(companyName) {
+		// 半角英数字を全角英数字に変換
+		fullWidthCompanyName := width.Widen.String(companyName)
+		targetNames = append(targetNames, fullWidthCompanyName)
 	}
 
-	// Scanの実行
-	result, err := svc.Scan(context.TODO(), input)
-	if err != nil {
-		return nil, err
+	var resultItems []map[string]types.AttributeValue
+	for _, name := range targetNames {
+		// フィルタ式とプレースホルダの設定
+		filterExpression := "contains(#name, :companyName)"
+		expressionAttributeNames := map[string]string{
+			"#name": "name",
+		}
+		expressionAttributeValues := map[string]types.AttributeValue{
+			":companyName": &types.AttributeValueMemberS{Value: name},
+		}
+
+		// Scan入力パラメータの設定
+		input := &dynamodb.ScanInput{
+			TableName:                 aws.String(tableName), // テーブル名を設定
+			FilterExpression:          aws.String(filterExpression),
+			ExpressionAttributeNames:  expressionAttributeNames,
+			ExpressionAttributeValues: expressionAttributeValues,
+		}
+
+		// Scanの実行
+		result, err := svc.Scan(context.TODO(), input)
+		if err != nil {
+			return nil, err
+		}
+		resultItems = append(resultItems, result.Items...)
 	}
 
 	var companies []internal.Company
-	err = attributevalue.UnmarshalListOfMaps(result.Items, &companies)
+	err := attributevalue.UnmarshalListOfMaps(resultItems, &companies)
 	if err != nil {
 		fmt.Println("unMarshal err: ", err)
 		return nil, err
 	}
 	return companies, nil
+}
+
+/*
+	S3 に指定したキーが存在するかチェックする
+
+return: 存在すれば true, 存在しなければ false
+*/
+func CheckExistsS3Key(s3Client *s3.Client, bucketName string, key string) bool {
+	// ファイルの存在チェック
+	output, _ := s3Client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucketName),
+		Prefix:  aws.String(key),
+		MaxKeys: aws.Int32(1),
+	})
+	// fmt.Printf("%s/%s の存在チェック結果: %v\n", bucketName, key, existsFile)
+
+	return len(output.Contents) > 0
+}
+
+func GetS3Object(s3Client *s3.Client, bucketName string, key string) (*s3.GetObjectOutput, error) {
+	output, err := s3Client.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
+}
+
+func ListS3Objects(s3Client *s3.Client, bucketName string, key string) *s3.ListObjectsV2Output {
+	output, _ := s3Client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucketName),
+		Prefix: aws.String(key),
+	})
+	return output
 }
