@@ -21,13 +21,14 @@ fi
 
 # 引数を取得
 TARGET=$1
+echo "\033[33mTARGET: $1\033[0m"  # 黄色
 
 # Build Docker image
 # docker build --platform linux/amd64 -t $ECR_BASE_URI/$ECR_NAME:$IMAGE_TAG .
 docker build --platform linux/amd64 -t compass-api:${IMAGE_TAG} .
 
 ### ECR に push するためにタグを付け替える
-docker tag compass-api:${IMAGE_TAG} 087756241789.dkr.ecr.ap-northeast-1.amazonaws.com/compass:${IMAGE_TAG}
+docker tag compass-api:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.ap-northeast-1.amazonaws.com/compass:${IMAGE_TAG}
 
 # Login to ECR
 aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin $ECR_BASE_URI
