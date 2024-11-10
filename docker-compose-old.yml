@@ -1,0 +1,29 @@
+version: "3.8"
+
+services:
+  app:
+    container_name: compass_api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 8080:8080
+    volumes:
+      - .:/app
+    command: ["air"]
+    depends_on: ["db"]
+  db:
+    container_name: compass_db
+    image: mysql:8.0
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      TZ: "Asia/Tokyo"
+    volumes:
+      - ./db-data:/var/lib/mysql
+      - ./my.cnf:/etc/mysql/conf.d/my.cnf
+
+volumes:
+  db-data:

@@ -1,29 +1,46 @@
 version: "3.8"
 
 services:
-  app:
-    container_name: compass_api
+  localstack:
+    container_name: "localstack-for-compass"
+    image: localstack/localstack
+    ports:
+      - "127.0.0.1:4566:4566" # LocalStack Gateway
+      - "127.0.0.1:4510-4559:4510-4559" # external services port range
+    environment:
+      # LocalStack configuration: https://docs.localstack.cloud/references/configuration/
+      - DEBUG=${DEBUG:-0}
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN- }
+      - LOCALSTACK_DASHBOARD=1
+      - DATA_DIR=/var/lib/localstack/data
+    volumes:
+      - "./localstack-data:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - app-network
+
+  local-compass-api:
+    image: local-compass-api
+    container_name: local-compass-api
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - 8080:8080
+      - "8080:8080"
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_REGION=ap-northeast-1
+      - _LAMBDA_SERVER_PORT=8080
+      - AWS_LAMBDA_RUNTIME_API=localhost:8080
     volumes:
       - .:/app
-    command: ["air"]
-    depends_on: ["db"]
-  db:
-    container_name: compass_db
-    image: mysql:8.0
-    ports:
-      - 3306:3306
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      TZ: "Asia/Tokyo"
-    volumes:
-      - ./db-data:/var/lib/mysql
-      - ./my.cnf:/etc/mysql/conf.d/my.cnf
+    command: ./main
+    networks:
+      - app-network
+    tty: true
 
-volumes:
-  db-data:
+# Define the network outside the services section
+networks:
+  app-network:
+    driver: bridge

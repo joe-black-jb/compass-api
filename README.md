@@ -39,5 +39,21 @@ aws lambda update-function-code --function-name compass-api --image-uri ${ECR_BA
 ## ローカルでコンテナを起動する
 docker images
 
-docker run --rm -it {↑で確認したイメージID}
+docker run --rm -it {確認したイメージID}
+```
+
+## コマンド (LocalStack)
+
+```sh
+# Docker コンテナの作成
+make up
+
+# zipファイルの作成
+make zip
+
+# Lambda を更新
+make local-lambda-update
+
+# LocalStack + Terraform でローカルに AWS 環境を構築
+make tf
 ```

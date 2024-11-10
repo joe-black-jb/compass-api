@@ -4,5 +4,16 @@
 /XBRL
 /json
 /HTML
-.terraform
+/terraform/localStack/main
+/terraform/localStack/main.zip
+*.tfvars
+*tfstate*
+*.terraform
 *.tfstate
+failed.json
+invalid-summary.json
+retryReports.json
+*.log
+/localstack-data
+local.go
+*data.json
