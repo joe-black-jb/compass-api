@@ -60,12 +60,12 @@ func handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.API
 	fmt.Printf("Received request: %v\n", req)
 
 	path := req.PathParameters["path"]
-  companyId := req.PathParameters["companyId"]
+	companyId := req.PathParameters["companyId"]
 
-  if companyId != "" {
-    fmt.Println("get company route")
+	if companyId != "" {
+		fmt.Println("get company route")
 		return api.GetCompany(req, dynamoClient)
-  }
+	}
 
 	// Routing
 	switch path {
@@ -84,6 +84,9 @@ func handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.API
 	case "fundamentals":
 		fmt.Println("search fundamentals route")
 		return api.GetFundamentals(req, dynamoClient)
+	case "news":
+		fmt.Println("news route")
+		return api.GetLatestNews(req)
 	default:
 		fmt.Println("default")
 	}

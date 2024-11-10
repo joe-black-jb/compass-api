@@ -32,6 +32,7 @@ import (
 
 var dynamoClient *dynamodb.Client
 var s3Client *s3.Client
+var latestFileKey = "latest/news.json"
 
 func init() {
 	env := os.Getenv("ENV")
@@ -753,6 +754,52 @@ func GetFundamentals(req events.APIGatewayProxyRequest, client *dynamodb.Client)
 	return events.APIGatewayProxyResponse{
 		StatusCode: http.StatusOK,
 		Body:       string(body),
+		Headers: map[string]string{
+			"Content-type": "application/json",
+		},
+	}, nil
+}
+
+func GetLatestNews(req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	newsBucketName := os.Getenv("NEWS_BUCKET_NAME")
+	output, err := GetS3Object(s3Client, newsBucketName, latestFileKey)
+	if err != nil {
+		log.Fatal("latest GetObject error: ", err)
+	}
+	if output == nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "No data",
+		}, err
+	}
+	body, err := io.ReadAll(output.Body)
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "io.ReadAll error",
+		}, err
+	}
+	defer output.Body.Close()
+
+	var newsData internal.NewsResult
+	err = json.Unmarshal(body, &newsData)
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "json.Unmarshal error",
+		}, err
+	}
+
+	jsonBody, err := json.MarshalIndent(newsData, "", "  ")
+	if err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: http.StatusInternalServerError,
+			Body:       "json.MarshalIndent error",
+		}, err
+	}
+	return events.APIGatewayProxyResponse{
+		StatusCode: http.StatusOK,
+		Body:       string(jsonBody),
 		Headers: map[string]string{
 			"Content-type": "application/json",
 		},
