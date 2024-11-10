@@ -189,6 +189,7 @@ type Meta struct {
 }
 
 type Result struct {
+	DateKey              string `json:"dateKey"` // EDINETの仕様書にはない値
 	SeqNumber            int    `json:"seqNumber"`
 	DocId                string `json:"docId"`
 	EdinetCode           string `json:"edinetCode"`
@@ -282,4 +283,30 @@ type CFSummary struct {
 	// FreeCF TitleValue `json:"free_cf"` // フリーCF
 	StartCash TitleValue `json:"start_cash"` // 現金及び現金同等物の期首残高
 	EndCash   TitleValue `json:"end_cash"`   // 現金及び現金同等物の期末残高
+}
+
+type FailedReport struct {
+	DocID        string `json:"doc_id"`
+	RegisterDate string `json:"register_date"`
+	ErrorMsg     string `json:"error_msg"`
+}
+
+type InvalidSummary struct {
+	DocID        string `json:"doc_id"`
+	RegisterDate string `json:"register_date"`
+	ErrorMsg     string `json:"error_msg"`
+	CompanyName  string `json:"company_name"`
+	SummaryType  string `json:"report_type"`
+}
+
+type NewsData struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
+	Link    string `json:"link"`
+}
+
+type NewsResult struct {
+	NewsList []NewsData `json:"news_list"`
+	DateStr  string     `json:"date_str"`
+	AmPm     string     `json:"am_pm"` // "am" か "pm" を設定
 }
