@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 package main
 
 import (
@@ -33,20 +36,40 @@ import (
 )
 
 var EDINETAPIKey string
-
+var EDINETSubAPIKey string
+var s3Client *s3.Client
 var dynamoClient *dynamodb.Client
-
 var tableName string
+var bucketName string
+var EDINETBucketName string
+var failedJSONFile = "failed.json"
+var failedReports []internal.FailedReport
+var mu sync.Mutex
+var errMsg string
+var emptyStrConvErr = `strconv.Atoi: parsing "": invalid syntax`
+var invalidSummaryJSONFile = "invalid-summary.json"
+var invalidSummaries []internal.InvalidSummary
+var apiTimes int
+var registerSingleReport string
 
 /* NOTE
 ・連結キャッシュフロー計算書:  0105050
 
 */
 
-// TODO: 売上高 ではなく 営業収益 で計上している企業の PL
-//       売上高と営業収益がどちらか入っていればOK
-// TODO: 営業利益 の部分に 営業損失 とだけ記載してある企業の PL
-// TODO: HTML は Validate 結果が false でも送信する
+/* TODO
+- 売上高 ではなく 営業収益 で計上している企業の PL
+- 売上高と営業収益がどちらか入っていればOK
+- 営業利益 の部分に 営業損失 とだけ記載してある企業の PL
+- EDINET サーバに対する負荷軽減
+	- xbrl ファイルを取得した後、S3に送信する
+		=> 個々の書類情報は初回以外は API ではなくS3から取るようにする
+	- compass-reports バケットを空にする make delS3 は何度実行しようが自由
+- 1日ごとの処理をコマンド1つで実行し、自動で1年分処理する
+【やりたいこと】
+  - コマンドで1日ずつ足して実行しているところを自動でやる
+- DocID を指定して、ピンポイントで処理する
+*/
 
 /*
 【営業収益、営業利益の場合】
@@ -58,6 +81,7 @@ var tableName string
 
 func init() {
 	env := os.Getenv("ENV")
+	fmt.Println("環境: ", env)
 
 	if env == "local" {
 		err := godotenv.Load()
@@ -68,7 +92,12 @@ func init() {
 	}
 	EDINETAPIKey = os.Getenv("EDINET_API_KEY")
 	if EDINETAPIKey == "" {
-		fmt.Println("API key not found")
+		fmt.Println("EDINET API key not found")
+		return
+	}
+	EDINETSubAPIKey = os.Getenv("EDINET_SUB_API_KEY")
+	if EDINETSubAPIKey == "" {
+		fmt.Println("EDINET Sub API key not found")
 		return
 	}
 
@@ -77,8 +106,18 @@ func init() {
 		fmt.Println("Load default config error: %v", cfgErr)
 		return
 	}
+	region := os.Getenv("REGION")
+	sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	s3Client = s3.NewFromConfig(sdkConfig)
 	dynamoClient = dynamodb.NewFromConfig(cfg)
 	tableName = os.Getenv("DYNAMO_TABLE_NAME")
+	bucketName = os.Getenv("BUCKET_NAME")
+	EDINETBucketName = os.Getenv("EDINET_BUCKET_NAME")
+  registerSingleReport = os.Getenv("REGISTER_SINGLE_REPORT")
 }
 
 func main() {
@@ -87,61 +126,98 @@ func main() {
 	if tableName == "" {
 		log.Fatal("テーブル名が設定されていません")
 	}
-	reports, err := GetReports()
-	fmt.Println("len(reports): ", len(reports))
-	if err != nil {
-		fmt.Println(err)
-		return
+
+  if registerSingleReport == "true" {
+    fmt.Println("single モードで登録します⭐️")
+    // 楽天グループ
+    singleEDINETCode := "E05080"
+    singleDocID := "S100NQTZ"
+    singleDateKey := "20220330"
+    periodStart := "2021-01-01"
+    periodEnd := "2021-12-31"
+    companyName := "楽天グループ株式会社"
+    // ファンダメンタルズ
+    fundamental := internal.Fundamental{
+      CompanyName:     companyName,
+      PeriodStart:     periodStart,
+      PeriodEnd:       periodEnd,
+      Sales:           0,
+      OperatingProfit: 0,
+      Liabilities:     0,
+      NetAssets:       0,
+    }
+    var singleWg sync.WaitGroup
+    RegisterReport(dynamoClient, singleEDINETCode, singleDocID, singleDateKey, companyName, periodStart, periodEnd, &fundamental, &singleWg)
+  } else {
+    reports, err := GetReports()
+    fmt.Println("len(reports): ", len(reports))
+    if err != nil {
+      fmt.Println(err)
+      return
+    }
+
+    var wg sync.WaitGroup
+    // reports: 1ヶ月分指定したら1ヶ月分のレポートが入っている
+    for _, report := range reports {
+      // TODO: 個々のレポートを S3 に送信する
+      /* 想定S3構造
+      20240101
+        |-- S100TPUA ... docID
+      */
+
+      // 並列で処理する場合
+      // wg.Add(1)
+      EDINETCode := report.EdinetCode
+      companyName := report.FilerName
+      docID := report.DocId
+      var periodStart string
+      var periodEnd string
+      if report.PeriodStart == "" || report.PeriodEnd == "" {
+        // 正規表現を用いて抽出
+        periodPattern := `(\d{4}/\d{2}/\d{2})－(\d{4}/\d{2}/\d{2})`
+        // 正規表現をコンパイル
+        re := regexp.MustCompile(periodPattern)
+        // 正規表現でマッチした部分を取得
+        match := re.FindString(report.DocDescription)
+        if match != "" {
+          splitPeriod := strings.Split(match, "－")
+          if len(splitPeriod) >= 2 {
+            periodStart = strings.ReplaceAll(splitPeriod[0], "/", "-")
+            periodEnd = strings.ReplaceAll(splitPeriod[1], "/", "-")
+          }
+        }
+      }
+
+      if report.PeriodStart != "" {
+        periodStart = report.PeriodStart
+      }
+
+      if report.PeriodEnd != "" {
+        periodEnd = report.PeriodEnd
+      }
+
+      // ファンダメンタルズ
+      fundamental := internal.Fundamental{
+        CompanyName:     companyName,
+        PeriodStart:     periodStart,
+        PeriodEnd:       periodEnd,
+        Sales:           0,
+        OperatingProfit: 0,
+        Liabilities:     0,
+        NetAssets:       0,
+      }
+      // 並列で処理する場合
+      RegisterReport(dynamoClient, EDINETCode, docID, report.DateKey, companyName, periodStart, periodEnd, &fundamental, &wg)
+
+      // 一定時間待つ (RegisterReport)
+      time.Sleep(3 * time.Second)
+    }
 	}
-
-	var wg sync.WaitGroup
-	for _, report := range reports {
-		wg.Add(1)
-		EDINETCode := report.EdinetCode
-		companyName := report.FilerName
-		docID := report.DocId
-		var periodStart string
-		var periodEnd string
-		if report.PeriodStart == "" || report.PeriodEnd == "" {
-			// 正規表現を用いて抽出
-			periodPattern := `(\d{4}/\d{2}/\d{2})－(\d{4}/\d{2}/\d{2})`
-			// 正規表現をコンパイル
-			re := regexp.MustCompile(periodPattern)
-			// 正規表現でマッチした部分を取得
-			match := re.FindString(report.DocDescription)
-
-			if match != "" {
-				splitPeriod := strings.Split(match, "－")
-				if len(splitPeriod) >= 2 {
-					periodStart = strings.ReplaceAll(splitPeriod[0], "/", "-")
-					periodEnd = strings.ReplaceAll(splitPeriod[1], "/", "-")
-				}
-			}
-		}
-
-		if report.PeriodStart != "" {
-			periodStart = report.PeriodStart
-		}
-
-		if report.PeriodEnd != "" {
-			periodEnd = report.PeriodEnd
-		}
-
-		// ファンダメンタルズ
-		fundamental := internal.Fundamental{
-			CompanyName:     companyName,
-			PeriodStart:     periodStart,
-			PeriodEnd:       periodEnd,
-			Sales:           0,
-			OperatingProfit: 0,
-			Liabilities:     0,
-			NetAssets:       0,
-		}
-		go RegisterReport(dynamoClient, EDINETCode, docID, companyName, periodStart, periodEnd, &fundamental, &wg)
-	}
-	wg.Wait()
+	// 並列で処理する場合
+	// wg.Wait()
 
 	fmt.Println("All processes done ⭐️")
+	fmt.Println("APIを叩いた回数(概算): ", apiTimes)
 	fmt.Println("所要時間: ", time.Since(start))
 }
 
@@ -224,116 +300,226 @@ func GetReports() ([]internal.Result, error) {
 	    Jul: 31   Aug: 31   Sep: 30   Oct: 31   Nov: 30   Dec: 31
 	*/
 	// ソフトバンクグループ株式会社 2024/06/21 15:21
+  // 2022/09/31 までやりたい
+  // TODO: 2024-03-28 は楽天グループのテストで一度登録したので必要があれば削除する
 
 	// 集計開始日付
-	date := time.Date(2024, time.June, 21, 1, 0, 0, 0, loc)
+	date := time.Date(2024, time.October, 1, 1, 0, 0, 0, loc)
 	// 集計終了日付
-	endDate := time.Date(2024, time.June, 21, 1, 0, 0, 0, loc)
+	endDate := time.Date(2024, time.October, 31, 1, 0, 0, 0, loc)
 	// now := time.Now()
 	for date.Before(endDate) || date.Equal(endDate) {
 		fmt.Println(fmt.Sprintf("%s の処理を開始します⭐️", date.Format("2006-01-02")))
 
+		/// テスト ///
 		var statement internal.Report
 
 		dateStr := date.Format("2006-01-02")
-		url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents.json?date=%s&&Subscription-Key=%s&type=2", dateStr, EDINETAPIKey)
-		resp, err := http.Get(url)
-		if err != nil {
-			fmt.Println("http get error : ", err)
-			return nil, err
-		}
-		defer resp.Body.Close()
+		//////////////
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
-		}
+		/* TODO
+		- バッチを回す時に同じ書類を再度取得しないようにする
+		  => S3 に 20060102 の形でディレクトリを切っておき、既にディレクトリがある場合は APIを叩かない
+		*/
 
-		err = json.Unmarshal(body, &statement)
-		if err != nil {
-			return nil, err
-		}
+    // GetReports は S3 にディレクトリあるかどうかに関わらず実行する
+		// // S3 にディレクトリがあるか確認
+		dateKey := date.Format("20060102")
+		// // 末尾にスラッシュを追加 (20060102/ にする)
+		// dateKeyWithSlash := dateKey + "/"
+		// fmt.Println("S3 キー: ", dateKey)
+		// isRegisterDateDone := api.CheckExistsS3Key(s3Client, EDINETBucketName, dateKeyWithSlash)
+		// fmt.Printf("%s に %s はありますか❓: %v\n", EDINETBucketName, dateKeyWithSlash, isRegisterDateDone)
+		// // TODO: S3 に登録した後は別のスクリプトで例えば 2024-10-01 のデータがバケットにちゃんと追加されているか確かめる
 
-		for _, s := range statement.Results {
-			// 有価証券報告書 (Securities Report)
-			isSecReport := s.FormCode == "030000" && s.DocTypeCode == "120"
-			// 訂正有価証券報告書 (Amended Securities Report)
-			isAmendReport := s.FormCode == "030001" && s.DocTypeCode == "130"
+		// if !isRegisterDateDone {}
+    /////// テストのためコメントアウト //////
+    url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents.json?date=%s&&Subscription-Key=%s&type=2", dateStr, EDINETSubAPIKey)
+    resp, err := http.Get(url)
+    if err != nil {
+      fmt.Println("http get error : ", err)
+      return nil, err
+    }
+    defer resp.Body.Close()
 
-			if isSecReport || isAmendReport {
-				results = append(results, s)
-			}
-		}
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+      return nil, err
+    }
+
+    err = json.Unmarshal(body, &statement)
+    if err != nil {
+      return nil, err
+    }
+
+    for _, s := range statement.Results {
+      // 有価証券報告書 (Securities Report)
+      isSecReport := s.FormCode == "030000" && s.DocTypeCode == "120"
+      // 訂正有価証券報告書 (Amended Securities Report)
+      isAmendReport := s.FormCode == "030001" && s.DocTypeCode == "130"
+
+      if isSecReport || isAmendReport {
+        s.DateKey = dateKey
+        results = append(results, s)
+      }
+    }
+    //////////////////////////////////////
+
 		date = date.AddDate(0, 0, 1)
+		// 一定時間待つ (GetReports)
+		time.Sleep(1 * time.Second)
 	}
 	return results, nil
 }
 
-func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID string, companyName string, periodStart string, periodEnd string, fundamental *internal.Fundamental, wg *sync.WaitGroup) {
-	defer wg.Done()
+func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID string, dateKey string, companyName string, periodStart string, periodEnd string, fundamental *internal.Fundamental, wg *sync.WaitGroup) {
+	fmt.Printf("===== ⭐️「%s」⭐️ =====\n", companyName)
+  // 並列で処理する場合
+	// defer wg.Done()
+
+	///// テスト //////
 	BSFileNamePattern := fmt.Sprintf("%s-%s-BS-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
 	PLFileNamePattern := fmt.Sprintf("%s-%s-PL-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
 
 	client := &http.Client{
 		Timeout: 300 * time.Second,
 	}
-	url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents/%s?type=1&Subscription-Key=%s", docID, EDINETAPIKey)
-	resp, err := client.Get(url)
-	if err != nil {
-		fmt.Println("http get error : ", err)
-		return
-	}
-	defer resp.Body.Close()
+	/////////////////
 
-	dirPath := "XBRL"
-	zipFileName := fmt.Sprintf("%s.zip", docID)
-	path := filepath.Join(dirPath, zipFileName)
+	// TODO: S3 に同じ DocID のディレクトリがある場合、再度取得しない
+	// 20241001/{docID} がある場合は API を叩かない
+	dateDocKey := fmt.Sprintf("%s/%s", dateKey, docID)
+	// 末尾にスラッシュを追加
+	dateDocKeyWithSlash := dateDocKey + "/"
+	fmt.Println("dateKeyもあるkeyWithSlash: ", dateDocKeyWithSlash)
+	// 同じ dateKey のディレクトリがある場合、RegisterReport() を実施しないのでチェックしても意味がない❗️
+	isDocRegistered, err := api.CheckExistsS3Key(s3Client, EDINETBucketName, dateDocKeyWithSlash)
+	if err != nil {
+		fmt.Println("CheckExistsS3Key error: ", err)
+		return
+	}
+	fmt.Printf("%s の %s は登録済みですか❓: %v\n", EDINETBucketName, dateDocKeyWithSlash, isDocRegistered)
 
-	// ディレクトリが存在しない場合は作成
-	err = os.MkdirAll(dirPath, os.ModePerm)
-	if err != nil {
-		fmt.Println("Error creating directory:", err)
-		return
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		fmt.Println("Error while creating the file:", err)
-		return
-	}
-	defer file.Close()
+  // XBRLファイルの中身
+  var body []byte
+  var parentPath string
+  if isDocRegistered {
+    getXBRLFromS3 := os.Getenv("GET_XBRL_FROM_S3")
+    var xbrlFileName string
+    if getXBRLFromS3 == "true" {
+      if registerSingleReport == "true" {
+        // S3 に登録済みの XBRL ファイルを取得し、中身を body に格納
+        xbrlFileName = "jpcrp030000-asr-001_E05080-000_2021-12-31_01_2022-03-30.xbrl"
+      } else {
+        // S3 をチェック
+        dateDocIDKey := fmt.Sprintf("%s/%s", dateKey, docID)
 
-	// レスポンスのBody（ZIPファイルの内容）をファイルに書き込む
-	_, err = io.Copy(file, resp.Body)
-	if err != nil {
-		fmt.Println("Error while saving the file:", err)
-		return
-	}
+        listOutput := api.ListS3Objects(s3Client, EDINETBucketName, dateDocIDKey)
+        // fmt.Printf("%s/%s の List 結果 ⭐️: %v\n", EDINETBucketName, dateDocIDKey, listOutput)
+        if len(listOutput.Contents) > 0 {
+          firstFile := listOutput.Contents[0]
+          fmt.Println("先頭のファイル名 ⭐️: ", *firstFile.Key)
+          // S3 に登録済みのxbrlファイル
+          splitBySlash := strings.Split(*firstFile.Key, "/")
+          if len(splitBySlash) >= 3 {
+            xbrlFileName = splitBySlash[len(splitBySlash) - 1]
+          }
+        }
+      }
+      key := fmt.Sprintf("%s/%s/%s", dateKey, docID, xbrlFileName)
+      fmt.Println("S3 から XBRL ファイルを取得します⭐️")
+      output, err := api.GetS3Object(s3Client, EDINETBucketName, key)
+      if err != nil {
+        log.Fatal("S3からのXBRLファイル取得エラー: ", err)
+      }
+      readBody, err := io.ReadAll(output.Body)
+      if err != nil {
+        log.Fatal("io.ReadAll エラー: ", err)
+      }
+      defer output.Body.Close()
+      body = readBody
+    }
+  } else {
+    //////// テスト ////////
+    fmt.Printf("「%s」のレポート (%s) を API から取得します🎾\n", companyName, docID)
+    apiTimes += 1
+    url := fmt.Sprintf("https://api.edinet-fsa.go.jp/api/v2/documents/%s?type=1&Subscription-Key=%s", docID, EDINETSubAPIKey)
+    resp, err := client.Get(url)
+    if err != nil {
+      errMsg = "http get error : "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+    defer resp.Body.Close()
 
-	// ZIPファイルを解凍
-	unzipDst := filepath.Join(dirPath, docID)
-	XBRLFilepath, err := unzip(path, unzipDst)
-	if err != nil {
-		fmt.Println("Error unzipping file:", err)
-		return
-	}
+    dirPath := "XBRL"
+    zipFileName := fmt.Sprintf("%s.zip", docID)
+    path := filepath.Join(dirPath, zipFileName)
 
-	// XBRLファイルの取得
-	parentPath := filepath.Join("XBRL", docID, XBRLFilepath)
-	XBRLFile, err := os.Open(parentPath)
-	if err != nil {
-		fmt.Println("XBRL open err: ", err)
-		return
-	}
-	body, err := io.ReadAll(XBRLFile)
-	if err != nil {
-		fmt.Println("XBRL read err: ", err)
-		return
-	}
+    // ディレクトリが存在しない場合は作成
+    err = os.MkdirAll(dirPath, os.ModePerm)
+    if err != nil {
+      errMsg = "Error creating directory: "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+    file, err := os.Create(path)
+    if err != nil {
+      errMsg = "Error while creating the file: "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+    defer file.Close()
+
+    // レスポンスのBody（ZIPファイルの内容）をファイルに書き込む
+    _, err = io.Copy(file, resp.Body)
+    if err != nil {
+      errMsg = "Error while saving the file: "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+
+    // ZIPファイルを解凍
+    unzipDst := filepath.Join(dirPath, docID)
+    XBRLFilepath, err := unzip(path, unzipDst)
+    if err != nil {
+      errMsg = "Error unzipping file: "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+
+    // XBRLファイルの取得
+    parentPath = filepath.Join("XBRL", docID, XBRLFilepath)
+    XBRLFile, err := os.Open(parentPath)
+    if err != nil {
+      errMsg = "XBRL open err: "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+    // ここに xbrl ファイルがあるのでは❓
+    body, err = io.ReadAll(XBRLFile)
+    if err != nil {
+      errMsg = "XBRL read err: "
+      registerFailedJson(docID, dateKey, errMsg+err.Error())
+      return
+    }
+  }
+	// TODO: S3 に xbrl ファイルを送信
+	// xbrlKey = 20060102/{DocID}/~~~~.xbrl
+	splitBySlash := strings.Split(parentPath, "/")
+	xbrlFile := splitBySlash[len(splitBySlash)-1]
+	// fmt.Println("parentPath: ", parentPath)
+	// fmt.Println("xbrlファイル名: ", xbrlFile)
+	xbrlKey := fmt.Sprintf("%s/%s/%s", dateKey, docID, xbrlFile)
+	fmt.Println("S3 に登録する xbrlファイルパス: ", xbrlKey)
+	// S3 送信処理
+	PutXBRLtoS3(docID, dateKey, xbrlKey, body)
 
 	var xbrl internal.XBRL
 	err = xml.Unmarshal(body, &xbrl)
 	if err != nil {
-		fmt.Println("XBRL Unmarshal err: ", err)
+		errMsg = "XBRL Unmarshal err: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
 
@@ -377,15 +563,17 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	soloCFIFRSMattches := soloCFIFRSRe.FindString(string(body))
 
 	// 貸借対照表HTMLをローカルに作成
-	doc, err := CreateHTML("BS", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
+	doc, err := CreateHTML(docID, dateKey, "BS", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
 	if err != nil {
-		fmt.Println("PL CreateHTML エラー: ", err)
+		errMsg = "PL CreateHTML エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
 	// 損益計算書HTMLをローカルに作成
-	plDoc, err := CreateHTML("PL", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
+	plDoc, err := CreateHTML(docID, dateKey, "PL", consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern)
 	if err != nil {
-		fmt.Println("PL CreateHTML エラー: ", err)
+		errMsg = "PL CreateHTML エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
 
@@ -394,7 +582,7 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	summary.CompanyName = companyName
 	summary.PeriodStart = periodStart
 	summary.PeriodEnd = periodEnd
-	UpdateSummary(doc, &summary, fundamental)
+	UpdateSummary(doc, docID, dateKey, &summary, fundamental)
 	// BS バリデーション用
 	// isSummaryValid := ValidateSummary(summary)
 
@@ -403,86 +591,139 @@ func RegisterReport(dynamoClient *dynamodb.Client, EDINETCode string, docID stri
 	plSummary.CompanyName = companyName
 	plSummary.PeriodStart = periodStart
 	plSummary.PeriodEnd = periodEnd
-	UpdatePLSummary(plDoc, &plSummary, fundamental)
+	UpdatePLSummary(plDoc, docID, dateKey, &plSummary, fundamental)
 	isPLSummaryValid := ValidatePLSummary(plSummary)
 
 	// CF計算書データ
 	cfFileNamePattern := fmt.Sprintf("%s-%s-CF-from-%s-to-%s", EDINETCode, docID, periodStart, periodEnd)
-	cfHTML, err := CreateCFHTML(cfFileNamePattern, string(body), consolidatedCFMattches, consolidatedCFIFRSMattches, soloCFMattches, soloCFIFRSMattches)
+	cfHTML, err := CreateCFHTML(docID, dateKey, cfFileNamePattern, string(body), consolidatedCFMattches, consolidatedCFIFRSMattches, soloCFMattches, soloCFIFRSMattches)
 	if err != nil {
-		fmt.Println("CreateCFHTML err: ", err)
+		errMsg = "CreateCFHTML err: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
 	var cfSummary internal.CFSummary
 	cfSummary.CompanyName = companyName
 	cfSummary.PeriodStart = periodStart
 	cfSummary.PeriodEnd = periodEnd
-	UpdateCFSummary(cfHTML, &cfSummary)
+	UpdateCFSummary(docID, dateKey, cfHTML, &cfSummary)
 	isCFSummaryValid := ValidateCFSummary(cfSummary)
 
 	// CF計算書バリデーション後
+
+	// 並列で処理する場合
 	var putFileWg sync.WaitGroup
-	putFileWg.Add(2)
+	// putFileWg.Add(2)
+
 	// CF HTML は バリデーションの結果に関わらず送信
 	// S3 に CF HTML 送信 (HTML はスクレイピング処理があるので S3 への送信処理を個別で実行)
-	go PutFileToS3(EDINETCode, companyName, cfFileNamePattern, "html", &putFileWg)
+
+	// 並列で処理する場合
+	PutFileToS3(docID, dateKey, EDINETCode, companyName, cfFileNamePattern, "html", &putFileWg)
+
 	if isCFSummaryValid {
 		// S3 に JSON 送信
-		go HandleRegisterJSON(EDINETCode, companyName, cfFileNamePattern, cfSummary, &putFileWg)
+		// 並列で処理する場合
+		HandleRegisterJSON(docID, dateKey, EDINETCode, companyName, cfFileNamePattern, cfSummary, &putFileWg)
+
+    // TODO: invalid-summary.json から削除
+    deleteInvalidSummaryJsonItem(docID, dateKey, "CF",  companyName)
 	} else {
-		putFileWg.Done()
+		// 無効なサマリーデータをjsonに書き出す
+		registerInvalidSummaryJson(docID, dateKey, "CF", companyName)
+
+		// 並列で処理する場合
+		// putFileWg.Done()
+
 		///// ログを出さない場合はコメントアウト /////
 		PrintValidatedSummaryMsg(companyName, cfFileNamePattern, cfSummary, isCFSummaryValid)
 		////////////////////////////////////////
 	}
-	putFileWg.Wait()
+
+	// 並列で処理する場合
+	// putFileWg.Wait()
 
 	// 貸借対照表バリデーションなしバージョン
-	_, err = CreateJSON(BSFileNamePattern, summary)
+	_, err = CreateJSON(docID, dateKey, BSFileNamePattern, summary)
 	if err != nil {
-		fmt.Println("BS JSON ファイル作成エラー: ", err)
+		errMsg = "BS JSON ファイル作成エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
+
+	// 並列で処理する場合
 	var putBsWg sync.WaitGroup
-	putBsWg.Add(2)
+	// putBsWg.Add(2)
+
 	// BS JSON 送信
-	go PutFileToS3(EDINETCode, companyName, BSFileNamePattern, "json", &putBsWg)
+	// 並列で処理する場合
+	PutFileToS3(docID, dateKey, EDINETCode, companyName, BSFileNamePattern, "json", &putBsWg)
+
 	// BS HTML 送信
-	go PutFileToS3(EDINETCode, companyName, BSFileNamePattern, "html", &putBsWg)
-	putBsWg.Wait()
+	// 並列で処理する場合
+	PutFileToS3(docID, dateKey, EDINETCode, companyName, BSFileNamePattern, "html", &putBsWg)
+	// putBsWg.Wait()
 
 	// 損益計算書バリデーション後
+	// 並列で処理する場合
 	var putPlWg sync.WaitGroup
-	putPlWg.Add(2)
+	// putPlWg.Add(2)
+
 	// PL HTML 送信 (バリデーション結果に関わらず)
-	go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "html", &putPlWg)
+	// 並列で処理する場合
+	PutFileToS3(docID, dateKey, EDINETCode, companyName, PLFileNamePattern, "html", &putPlWg)
+
 	if isPLSummaryValid {
-		_, err = CreateJSON(PLFileNamePattern, plSummary)
+		_, err = CreateJSON(docID, dateKey, PLFileNamePattern, plSummary)
 		if err != nil {
-			fmt.Println("PL JSON ファイル作成エラー: ", err)
+			errMsg = "PL JSON ファイル作成エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
 			return
 		}
 		// PL JSON 送信
-		go PutFileToS3(EDINETCode, companyName, PLFileNamePattern, "json", &putPlWg)
+		// 並列で処理する場合
+		PutFileToS3(docID, dateKey, EDINETCode, companyName, PLFileNamePattern, "json", &putPlWg)
+
+    // TODO: invalid-summary.json から削除
+    deleteInvalidSummaryJsonItem(docID, dateKey, "PL",  companyName)
 	} else {
-		wg.Done()
+		// 無効なサマリーデータをjsonに書き出す
+		registerInvalidSummaryJson(docID, dateKey, "PL", companyName)
+
+		// 並列で処理する場合
+		// wg.Done()
 	}
-	putPlWg.Wait()
+	// 並列で処理する場合
+	// putPlWg.Wait()
 
 	// XBRL ファイルの削除
 	xbrlDir := filepath.Join("XBRL", docID)
 	err = os.RemoveAll(xbrlDir)
 	if err != nil {
-		fmt.Println("XBRL ディレクトリ削除エラー: ", err)
+		errMsg = "XBRL ディレクトリ削除エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 	}
 
 	// ファンダメンタル用jsonの送信
 	if ValidateFundamentals(*fundamental) {
-		RegisterFundamental(dynamoClient, *fundamental, EDINETCode)
+		RegisterFundamental(dynamoClient, docID, dateKey, *fundamental, EDINETCode)
+
+    // TODO: invalid-summary.json から削除
+    deleteInvalidSummaryJsonItem(docID, dateKey, "Fundamentals",  companyName)
+	} else {
+		// 無効なサマリーデータをjsonに書き出す
+		registerInvalidSummaryJson(docID, dateKey, "Fundamentals", companyName)
 	}
+
+  // レポートの登録処理完了後、failed.json から該当のデータを削除する
+  deleteFailedJsonItem(docID, dateKey, companyName)
+  // レポートの登録処理完了後、invalid-summary.json から該当のデータを削除する
+
+	fmt.Printf("「%s」のレポート(%s)の登録処理完了⭐️\n", companyName, docID)
+	////////////////////////////////////////
 }
 
-func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental *internal.Fundamental) {
+func UpdateSummary(doc *goquery.Document, docID string, dateKey string, summary *internal.Summary, fundamental *internal.Fundamental) {
 	doc.Find("tr").Each(func(i int, s *goquery.Selection) {
 		tdText := s.Find("td").Text()
 		tdText = strings.TrimSpace(tdText)
@@ -500,6 +741,10 @@ func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental
 			previousText := titleTexts[1]
 			previousIntValue, err := api.ConvertTextValue2IntValue(previousText)
 			if err != nil {
+				if err.Error() != emptyStrConvErr {
+					errMsg = "ConvertTextValue2IntValue (BS previous) エラー: "
+					registerFailedJson(docID, dateKey, errMsg+err.Error())
+				}
 				return
 			}
 
@@ -507,6 +752,10 @@ func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental
 			currentText := titleTexts[2]
 			currentIntValue, err := api.ConvertTextValue2IntValue(currentText)
 			if err != nil {
+				if err.Error() != emptyStrConvErr {
+					errMsg = "ConvertTextValue2IntValue (BS current) エラー: "
+					registerFailedJson(docID, dateKey, errMsg+err.Error())
+				}
 				return
 			}
 
@@ -560,7 +809,7 @@ func UpdateSummary(doc *goquery.Document, summary *internal.Summary, fundamental
 	})
 }
 
-func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, fundamental *internal.Fundamental) {
+func UpdatePLSummary(doc *goquery.Document, docID string, dateKey string, plSummary *internal.PLSummary, fundamental *internal.Fundamental) {
 	// 営業収益合計の設定が終わったかどうか管理するフラグ
 	isOperatingRevenueDone := false
 	// 営業費用合計の設定が終わったかどうか管理するフラグ
@@ -583,7 +832,10 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, funda
 			previousText := titleTexts[1]
 			previousIntValue, err := api.ConvertTextValue2IntValue(previousText)
 			if err != nil {
-				// fmt.Println("previous value convert error: ", err)
+				if err.Error() != emptyStrConvErr {
+					errMsg = "ConvertTextValue2IntValue (PL previous) エラー: "
+					registerFailedJson(docID, dateKey, errMsg+err.Error())
+				}
 				return
 			}
 
@@ -591,7 +843,10 @@ func UpdatePLSummary(doc *goquery.Document, plSummary *internal.PLSummary, funda
 			currentText := titleTexts[2]
 			currentIntValue, err := api.ConvertTextValue2IntValue(currentText)
 			if err != nil {
-				// fmt.Println("current value convert error: ", err)
+				if err.Error() != emptyStrConvErr {
+					errMsg = "ConvertTextValue2IntValue (PL current) エラー: "
+					registerFailedJson(docID, dateKey, errMsg+err.Error())
+				}
 				return
 			}
 
@@ -828,19 +1083,11 @@ func UpdatePL(dynamoClient *dynamodb.Client, id string, pl int) {
 	}
 }
 
-func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fundamental, EDINETCode string) {
-	region := os.Getenv("REGION")
-	sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	s3Client := s3.NewFromConfig(sdkConfig)
-	bucketName := os.Getenv("BUCKET_NAME")
-
+func RegisterFundamental(dynamoClient *dynamodb.Client, docID string, dateKey string, fundamental internal.Fundamental, EDINETCode string) {
 	fundamentalBody, err := json.Marshal(fundamental)
 	if err != nil {
-		fmt.Println("fundamental json.Marshal err: ", err)
+		errMsg = "fundamental json.Marshal err: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
 	// ファイル名
@@ -859,7 +1106,9 @@ func RegisterFundamental(dynamoClient *dynamodb.Client, fundamental internal.Fun
 			ContentType: aws.String("application/json"),
 		})
 		if err != nil {
-			fmt.Println(err)
+			// fmt.Println(err)
+			errMsg = "fundamentals ファイルの S3 Put Object エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
 			return
 		}
 		///// ログを出さない場合はコメントアウト /////
@@ -906,13 +1155,14 @@ HTMLをパースしローカルに保存する
 	  BSFileNamePattern:       BSファイル名パターン
 		PLFileNamePattern:       PLファイル名パターン
 */
-func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern string) (*goquery.Document, error) {
+func CreateHTML(docID string, dateKey string, fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMatches, soloPLMatches, BSFileNamePattern, PLFileNamePattern string) (*goquery.Document, error) {
 	// エスケープ文字をデコード
 	var unescapedStr string
 
 	// BS の場合
 	if fileType == "BS" {
 		if consolidatedBSMatches == "" && soloBSMatches == "" {
+			registerFailedJson(docID, dateKey, "parse 対象の貸借対照表データがありません")
 			return nil, errors.New("parse 対象の貸借対照表データがありません")
 		} else if consolidatedBSMatches != "" {
 			unescapedStr = html.UnescapeString(consolidatedBSMatches)
@@ -924,6 +1174,7 @@ func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMa
 	// PL の場合
 	if fileType == "PL" {
 		if consolidatedPLMatches == "" && soloPLMatches == "" {
+			registerFailedJson(docID, dateKey, "parse 対象の損益計算書データがありません")
 			return nil, errors.New("parse 対象の損益計算書データがありません")
 		} else if consolidatedPLMatches != "" {
 			unescapedStr = html.UnescapeString(consolidatedPLMatches)
@@ -959,6 +1210,8 @@ func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMa
 		// ディレクトリが存在しない場合は作成
 		err := os.Mkdir(HTMLDirName, 0755) // 0755はディレクトリのパーミッション
 		if err != nil {
+			errMsg = "HTML ローカルディレクトリ作成エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
 			fmt.Println("Error creating directory:", err)
 			return nil, err
 		}
@@ -966,20 +1219,26 @@ func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMa
 
 	createFile, err := os.Create(filePath)
 	if err != nil {
-		fmt.Println("HTML create err: ", err)
+		errMsg = "HTML ローカルファイル作成エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
+		// fmt.Println("HTML create err: ", err)
 		return nil, err
 	}
 	defer createFile.Close()
 
 	_, err = createFile.WriteString(unescapedStr)
 	if err != nil {
-		fmt.Println("HTML write err: ", err)
+		errMsg = "HTML ローカルファイル書き込みエラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
+		// fmt.Println("HTML write err: ", err)
 		return nil, err
 	}
 
 	openFile, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("HTML open error: ", err)
+		errMsg = "HTML ローカルファイル書き込み後オープンエラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
+		// fmt.Println("HTML open error: ", err)
 		return nil, err
 	}
 	defer openFile.Close()
@@ -987,7 +1246,9 @@ func CreateHTML(fileType, consolidatedBSMatches, soloBSMatches, consolidatedPLMa
 	// goqueryでHTMLをパース
 	doc, err := goquery.NewDocumentFromReader(openFile)
 	if err != nil {
-		fmt.Println("HTML goquery.NewDocumentFromReader error: ", err)
+		errMsg = "HTML goquery.NewDocumentFromReader error: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
+		// fmt.Println("HTML goquery.NewDocumentFromReader error: ", err)
 		return nil, err
 	}
 	// return した doc は updateSummary に渡す
@@ -1003,9 +1264,10 @@ consolidatedCFIFRSMattches: 連結キャッシュ・フロー計算書 (IFRS)
 soloCFMattches:             キャッシュ・フロー計算書
 soloCFIFRSPattern:          キャッシュ・フロー計算書 (IFRS)
 */
-func CreateCFHTML(cfFileNamePattern, body string, consolidatedCFMattches string, consolidatedCFIFRSMattches string, soloCFMattches string, soloCFIFRSMattches string) (*goquery.Document, error) {
+func CreateCFHTML(docID string, dateKey string, cfFileNamePattern, body string, consolidatedCFMattches string, consolidatedCFIFRSMattches string, soloCFMattches string, soloCFIFRSMattches string) (*goquery.Document, error) {
 
 	if consolidatedCFMattches == "" && consolidatedCFIFRSMattches == "" && soloCFMattches == "" && soloCFIFRSMattches == "" {
+		registerFailedJson(docID, dateKey, "パースする対象がありません")
 		return nil, errors.New("パースする対象がありません")
 	}
 
@@ -1034,7 +1296,8 @@ func CreateCFHTML(cfFileNamePattern, body string, consolidatedCFMattches string,
 	// HTML ファイルの作成
 	cfHTML, err := os.Create(cfHTMLFilePath)
 	if err != nil {
-		fmt.Println("CF HTML create err: ", err)
+		errMsg = "CF HTML create err: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return nil, err
 	}
 	defer cfHTML.Close()
@@ -1042,14 +1305,16 @@ func CreateCFHTML(cfFileNamePattern, body string, consolidatedCFMattches string,
 	// HTML ファイルに書き込み
 	_, err = cfHTML.WriteString(unescapedMatch)
 	if err != nil {
-		fmt.Println("CF HTML write err: ", err)
+		errMsg = "CF HTML write err: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return nil, err
 	}
 
 	// HTML ファイルの読み込み
 	cfHTMLFile, err := os.Open(cfHTMLFilePath)
 	if err != nil {
-		fmt.Println("CF HTML open error: ", err)
+		errMsg = "CF HTML open error: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return nil, err
 	}
 	defer cfHTMLFile.Close()
@@ -1057,50 +1322,59 @@ func CreateCFHTML(cfFileNamePattern, body string, consolidatedCFMattches string,
 	// goqueryでHTMLをパース
 	cfDoc, err := goquery.NewDocumentFromReader(cfHTMLFile)
 	if err != nil {
-		fmt.Println("CF goquery.NewDocumentFromReader err: ", err)
+		errMsg = "CF goquery.NewDocumentFromReader err: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return nil, err
 	}
 	return cfDoc, nil
 }
 
-func CreateJSON(fileNamePattern string, summary interface{}) (string, error) {
+func CreateJSON(docID string, dateKey string, fileNamePattern string, summary interface{}) (string, error) {
 	fileName := fmt.Sprintf("%s.json", fileNamePattern)
 	filePath := fmt.Sprintf("json/%s", fileName)
 
 	// ディレクトリが存在しない場合は作成
 	err := os.MkdirAll("json", os.ModePerm)
 	if err != nil {
-		fmt.Println("Error creating directory:", err)
+		errMsg = "Error creating directory: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return "", err
 	}
 
 	jsonFile, err := os.Create(filePath)
 	if err != nil {
-		fmt.Println(err)
+		// fmt.Println(err)
+		errMsg = "ローカル JSON ファイル作成エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return "", err
 	}
 	defer jsonFile.Close()
 
 	jsonBody, err := json.MarshalIndent(summary, "", "  ")
 	if err != nil {
-		fmt.Println(err)
+		// fmt.Println(err)
+		errMsg = "ローカル JSON MarshalIndent エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return "", err
 	}
 	_, err = jsonFile.Write(jsonBody)
 	if err != nil {
-		fmt.Println(err)
+		// fmt.Println(err)
+		errMsg = "ローカル JSON ファイル write エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return "", err
 	}
 	return filePath, nil
 }
 
-func UpdateCFSummary(cfDoc *goquery.Document, cfSummary *internal.CFSummary) {
+func UpdateCFSummary(docID string, dateKey string, cfDoc *goquery.Document, cfSummary *internal.CFSummary) {
 	cfDoc.Find("tr").Each(func(i int, s *goquery.Selection) {
 		tdText := s.Find("td").Text()
 		tdText = strings.TrimSpace(tdText)
 		splitTdTexts := strings.Split(tdText, "\n")
 		var titleTexts []string
 		for _, t := range splitTdTexts {
+      t = strings.TrimSpace(t)
 			if t != "" {
 				titleTexts = append(titleTexts, t)
 			}
@@ -1112,7 +1386,10 @@ func UpdateCFSummary(cfDoc *goquery.Document, cfSummary *internal.CFSummary) {
 			previousText := titleTexts[1]
 			previousIntValue, err := api.ConvertTextValue2IntValue(previousText)
 			if err != nil {
-				// fmt.Println("previous value convert error: ", err)
+				if err.Error() != emptyStrConvErr {
+					errMsg = "ConvertTextValue2IntValue (CF previous) エラー: "
+					registerFailedJson(docID, dateKey, errMsg+err.Error())
+				}
 				return
 			}
 
@@ -1120,7 +1397,10 @@ func UpdateCFSummary(cfDoc *goquery.Document, cfSummary *internal.CFSummary) {
 			currentText := titleTexts[2]
 			currentIntValue, err := api.ConvertTextValue2IntValue(currentText)
 			if err != nil {
-				// fmt.Println("current value convert error: ", err)
+				if err.Error() != emptyStrConvErr {
+					errMsg = "ConvertTextValue2IntValue (CF current) エラー: "
+					registerFailedJson(docID, dateKey, errMsg+err.Error())
+				}
 				return
 			}
 
@@ -1160,9 +1440,10 @@ func ValidateCFSummary(cfSummary internal.CFSummary) bool {
 		cfSummary.PeriodEnd != "" &&
 		(cfSummary.OperatingCF.Previous != 0 || cfSummary.OperatingCF.Current != 0) &&
 		(cfSummary.InvestingCF.Previous != 0 || cfSummary.InvestingCF.Current != 0) &&
-		(cfSummary.FinancingCF.Previous != 0 || cfSummary.FinancingCF.Current != 0) &&
-		(cfSummary.StartCash.Previous != 0 || cfSummary.StartCash.Current != 0) &&
-		(cfSummary.EndCash.Previous != 0 || cfSummary.EndCash.Current != 0) {
+		(cfSummary.FinancingCF.Previous != 0 || cfSummary.FinancingCF.Current != 0) {
+      // 期首残高、期末残高のチェックは外す
+      // (cfSummary.StartCash.Previous != 0 || cfSummary.StartCash.Current != 0) &&
+      // (cfSummary.EndCash.Previous != 0 || cfSummary.EndCash.Current != 0)
 		return true
 	}
 	return false
@@ -1197,8 +1478,9 @@ func PrintValidatedSummaryMsg(companyName string, fileName string, summary inter
 }
 
 // TODO: 汎用ファイル送信処理
-func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, extension string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func PutFileToS3(docID string, dateKey string, EDINETCode string, companyName string, fileNamePattern string, extension string, wg *sync.WaitGroup) {
+	// 並列で処理する場合
+	// defer wg.Done()
 
 	var fileName string
 	var filePath string
@@ -1216,31 +1498,25 @@ func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, 
 	defer func() {
 		err := os.RemoveAll(filePath)
 		if err != nil {
-			fmt.Printf("ローカルファイル削除エラー: %v\n", err)
+			errMsg = "ローカルファイル削除エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
 			return
 		}
 		// fmt.Printf("%s を削除しました\n", filePath)
 	}()
 
 	// S3 に ファイルを送信 (Key は aws configure で設定しておく)
-	region := os.Getenv("REGION")
-	sdkConfig, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	s3Client := s3.NewFromConfig(sdkConfig)
-	bucketName := os.Getenv("BUCKET_NAME")
-
 	file, err := os.Open(filePath)
 	if err != nil {
-		fmt.Println("open file error: ", err)
+		errMsg = "S3 へのファイル送信時、ローカルファイル open エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
 	defer func() {
 		err := file.Close()
 		if err != nil {
-			fmt.Println("ローカルファイル close エラー: ", err)
+			errMsg = "S3 へのファイル送信時、ローカルファイル close エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
 			return
 		}
 	}()
@@ -1250,9 +1526,10 @@ func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, 
 		reportType := splitByHyphen[2] // BS or PL or CF
 		key := fmt.Sprintf("%s/%s/%s", EDINETCode, reportType, fileName)
 
-		contentType, err := GetContentType(extension)
+		contentType, err := GetContentType(docID, dateKey, extension)
 		if err != nil {
-			fmt.Println("ContentType 取得エラー: ", err)
+			errMsg = "ContentType 取得エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
 			return
 		}
 
@@ -1269,7 +1546,8 @@ func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, 
 				ContentType: aws.String(contentType),
 			})
 			if err != nil {
-				fmt.Println("S3 PutObject error: ", err)
+				errMsg = "S3 PutObject error: "
+				registerFailedJson(docID, dateKey, errMsg+err.Error())
 				return
 			}
 
@@ -1290,23 +1568,25 @@ func PutFileToS3(EDINETCode string, companyName string, fileNamePattern string, 
 	}
 }
 
-func GetContentType(extension string) (string, error) {
+func GetContentType(docID string, dateKey string, extension string) (string, error) {
 	switch extension {
 	case "json":
 		return "application/json", nil
 	case "html":
 		return "text/html", nil
 	}
+	registerFailedJson(docID, dateKey, "無効なファイル形式です")
 	return "", errors.New("無効なファイル形式です")
 }
 
-func HandleRegisterJSON(EDINETCode string, companyName string, fileNamePattern string, summary interface{}, wg *sync.WaitGroup) {
-	_, err := CreateJSON(fileNamePattern, summary)
+func HandleRegisterJSON(docID string, dateKey string, EDINETCode string, companyName string, fileNamePattern string, summary interface{}, wg *sync.WaitGroup) {
+	_, err := CreateJSON(docID, dateKey, fileNamePattern, summary)
 	if err != nil {
-		fmt.Println("CF JSON ファイル作成エラー: ", err)
+		errMsg = "CF JSON ファイル作成エラー: "
+		registerFailedJson(docID, dateKey, errMsg+err.Error())
 		return
 	}
-	PutFileToS3(EDINETCode, companyName, fileNamePattern, "json", wg)
+	PutFileToS3(docID, dateKey, EDINETCode, companyName, fileNamePattern, "json", wg)
 }
 
 func FormatUnitStr(baseStr string) string {
@@ -1360,4 +1640,270 @@ func FormatHtmlTable(htmlStr string) string {
 		htmlStr = strings.ReplaceAll(htmlStr, colGroupMatch, "")
 	}
 	return htmlStr
+}
+
+/*
+エラーが出た場合に docID といつ登録されたレポートなのかをjsonファイルに記録する
+*/
+func registerFailedJson(docID string, dateKey string, errMsg string) {
+	fmt.Println(errMsg)
+	// 取得から更新までをロック
+	mu.Lock()
+  // 更新まで終わったらロック解除
+	defer mu.Unlock()
+
+	// json ファイルの取得
+	openFile, _ := os.Open(failedJSONFile)
+	defer openFile.Close()
+	if openFile == nil {
+		// ファイルがない場合は作成する
+		_, err := os.Create(failedJSONFile)
+		if err != nil {
+			fmt.Println("failed json create error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+	// fmt.Println("failed.json file: ", file)
+
+	// 中身を取得
+	body, err := io.ReadAll(openFile)
+	if err != nil {
+		fmt.Println("failed json read error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+	err = json.Unmarshal(body, &failedReports)
+	if err != nil {
+		fmt.Println("failed json unmarshal error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+	// 配列の中に自分がいるか確認
+	alreadyFailed := false
+	for _, report := range failedReports {
+		if report.DocID == docID {
+			alreadyFailed = true
+		}
+	}
+	// 未登録であれば登録
+	if !alreadyFailed {
+		failedReport := internal.FailedReport{
+			DocID:        docID,
+			RegisterDate: dateKey,
+			ErrorMsg:     errMsg,
+		}
+		failedReports = append(failedReports, failedReport)
+		jsonBody, err := json.MarshalIndent(failedReports, "", "  ")
+		if err != nil {
+			fmt.Println("json MarshalIndent when trying to write failed json error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+		// json を書き出す
+		err = os.WriteFile(failedJSONFile, jsonBody, 0666)
+		if err != nil {
+			fmt.Println("failed json write error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+}
+
+func deleteFailedJsonItem(docID string, dateKey string, companyName string) {
+  mu.Lock()
+  // 更新まで終わったらロック解除
+	defer mu.Unlock()
+  // json ファイルの取得
+	openFile, _ := os.Open(failedJSONFile)
+	defer openFile.Close()
+	if openFile == nil {
+		// ファイルがない場合は作成する
+		_, err := os.Create(failedJSONFile)
+		if err != nil {
+			fmt.Println("failed json create error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+	// fmt.Println("failed.json file: ", file)
+
+	// 中身を取得
+	body, err := io.ReadAll(openFile)
+	if err != nil {
+		fmt.Println("failed json read error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+	err = json.Unmarshal(body, &failedReports)
+	if err != nil {
+		fmt.Println("failed json unmarshal error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+  // 自分を取り除いたスライスを作成
+  var newFailedReports []internal.FailedReport
+
+  alreadyFailed := false
+	for _, report := range failedReports {
+		if report.DocID == docID {
+      alreadyFailed = true
+    } else {
+			newFailedReports = append(newFailedReports, report)
+    }
+	}
+  // failed.json に登録されていれば json を登録し直す
+  if alreadyFailed {
+    fmt.Printf("failed.json から「%s」のレポート (%s) を削除したもので書き換えます❗️\n", companyName, docID)
+    jsonBody, err := json.MarshalIndent(newFailedReports, "", "  ")
+    if err != nil {
+      fmt.Println("json MarshalIndent when trying to write failed json error: ", err)
+      // registerFailedJson(docID, dateKey, err.Error())
+    }
+    // json を書き出す
+    err = os.WriteFile(failedJSONFile, jsonBody, 0666)
+    if err != nil {
+      fmt.Println("failed json write error: ", err)
+      // registerFailedJson(docID, dateKey, err.Error())
+    }
+  }
+}
+
+/*
+無効なサマリーだった場合にjsonファイルに記録する
+*/
+func registerInvalidSummaryJson(docID string, dateKey string, summaryType string, companyName string) {
+	// 取得から更新までをロック
+	mu.Lock()
+  // 更新まで終わったらロック解除
+	defer mu.Unlock()
+
+	// json ファイルの取得
+	openFile, _ := os.Open(invalidSummaryJSONFile)
+	defer openFile.Close()
+	if openFile == nil {
+		// ファイルがない場合は作成する
+		_, err := os.Create(invalidSummaryJSONFile)
+		if err != nil {
+			fmt.Println("failed json create error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+	// fmt.Println("failed.json file: ", file)
+
+	// 中身を取得
+	body, err := io.ReadAll(openFile)
+	if err != nil {
+		fmt.Println("failed json read error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+	err = json.Unmarshal(body, &invalidSummaries)
+	if err != nil {
+		fmt.Println("failed json unmarshal error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+	// 配列の中に自分がいるか確認
+	alreadyFailed := false
+	for _, report := range invalidSummaries {
+		if report.DocID == docID {
+			alreadyFailed = true
+		}
+	}
+	// 未登録であれば登録
+	if !alreadyFailed {
+		invalidSummary := internal.InvalidSummary{
+			DocID:        docID,
+			RegisterDate: dateKey,
+			ErrorMsg:     errMsg,
+			SummaryType:  summaryType,
+			CompanyName:  companyName,
+		}
+		invalidSummaries = append(invalidSummaries, invalidSummary)
+		jsonBody, err := json.MarshalIndent(invalidSummaries, "", "  ")
+		if err != nil {
+			fmt.Println("json MarshalIndent when trying to write invalid summary error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+		// json を書き出す
+		err = os.WriteFile(invalidSummaryJSONFile, jsonBody, 0666)
+		if err != nil {
+			fmt.Println("invalid summary write error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+}
+
+func deleteInvalidSummaryJsonItem(docID string, dateKey string, summaryType string, companyName string) {
+  // 取得から更新までをロック
+	mu.Lock()
+  // 更新まで終わったらロック解除
+	defer mu.Unlock()
+
+	// json ファイルの取得
+	openFile, _ := os.Open(invalidSummaryJSONFile)
+	defer openFile.Close()
+	if openFile == nil {
+		// ファイルがない場合は作成する
+		_, err := os.Create(invalidSummaryJSONFile)
+		if err != nil {
+			fmt.Println("failed json create error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+	// fmt.Println("failed.json file: ", file)
+
+	// 中身を取得
+	body, err := io.ReadAll(openFile)
+	if err != nil {
+		fmt.Println("failed json read error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+	err = json.Unmarshal(body, &invalidSummaries)
+	if err != nil {
+		fmt.Println("failed json unmarshal error: ", err)
+		// registerFailedJson(docID, dateKey, err.Error())
+	}
+
+  // 自分を取り除いたスライスを作成
+  var newInvalidSummaries []internal.InvalidSummary
+
+	// 配列の中に自分がいるか確認
+	alreadyFailed := false
+	for _, report := range invalidSummaries {
+		if report.DocID == docID {
+			alreadyFailed = true
+		} else {
+      newInvalidSummaries = append(newInvalidSummaries, report)
+    }
+	}
+	// invalid-summary.json に登録されていれば json を登録し直す
+	if alreadyFailed {
+    fmt.Printf("invalid-summary.json から「%s」のレポート (%s) を削除したもので書き換えます❗️\n", companyName, docID)
+
+		jsonBody, err := json.MarshalIndent(newInvalidSummaries, "", "  ")
+		if err != nil {
+			fmt.Println("json MarshalIndent when trying to write invalid summary error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+		// json を書き出す
+		err = os.WriteFile(invalidSummaryJSONFile, jsonBody, 0666)
+		if err != nil {
+			fmt.Println("invalid summary write error: ", err)
+			// registerFailedJson(docID, dateKey, err.Error())
+		}
+	}
+}
+
+func PutXBRLtoS3(docID string, dateKey string, key string, body []byte) {
+	// ファイルの存在チェック
+	existsFile, _ := s3Client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: aws.String(EDINETBucketName),
+		Key:    aws.String(key),
+	})
+	if existsFile == nil {
+		_, err := s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+			Bucket:      aws.String(EDINETBucketName),
+			Key:         aws.String(key),
+			Body:        strings.NewReader(string(body)),
+			ContentType: aws.String("application/xml"),
+		})
+		if err != nil {
+			errMsg = "S3 への XBRL ファイル送信エラー: "
+			registerFailedJson(docID, dateKey, errMsg+err.Error())
+			return
+		}
+    fmt.Printf("xbrlファイル(%s)をS3に送信しました⭐️\n", key)
+	}
 }
