@@ -13,17 +13,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/joe-black-jb/compass-api/internal/api"
-	"github.com/joe-black-jb/compass-api/internal/database"
 	"github.com/joho/godotenv"
 )
 
 var dynamoClient *dynamodb.Client
 var s3Client *s3.Client
+var env string
 
 func init() {
 	fmt.Println("init ⭐️")
 
-	env := os.Getenv("ENV")
+	env = os.Getenv("ENV")
 
 	if env == "local" {
 		err := godotenv.Load()
@@ -47,13 +47,17 @@ func init() {
 func main() {
 	fmt.Println("main ⭐️")
 	// DB接続
-	database.Connect()
+	// database.Connect()
 
-	// // ルーター起動 (gin を使用する場合)
-	// api.Router()
-
-	// ハンドラー関数実行 (Lambda を使用する場合)
-	lambda.Start(handler)
+	if env == "local" {
+		fmt.Println("start gin ⭐️")
+		// ローカルでは gin のルーターを起動
+		api.Router()
+	} else {
+		fmt.Println("start lambda ⭐️")
+		// ハンドラー関数実行 (Lambda を使用する場合)
+		lambda.Start(handler)
+	}
 }
 
 func handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
