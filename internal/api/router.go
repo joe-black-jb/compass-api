@@ -124,6 +124,12 @@ func Router() {
 	// router.GET("/reports", GetReports)
 	// router.GET("/fundamentals", GetFundamentals)
 	// router.GET("/search/companies", SearchCompaniesByName)
+	router.GET("/companies/local", GetCompaniesGin)
+	router.GET("/company/local/:id", GetCompanyGin)
+	router.GET("/search/companies/local", SearchCompaniesByNameGin)
+	router.GET("/reports/local", GetReportsGin)
+	router.GET("/fundamentals/local", GetFundamentalsGin)
+	router.GET("/news/local", GetLatestNewsGin)
 
 	// 認証が必要なエンドポイント
 	auth := router.Group("/")
