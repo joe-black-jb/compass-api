@@ -207,16 +207,19 @@ func ScanCompaniesByName(svc *dynamodb.Client, tableName string, companyName str
 
 return: 存在すれば true, 存在しなければ false
 */
-func CheckExistsS3Key(s3Client *s3.Client, bucketName string, key string) bool {
+func CheckExistsS3Key(s3Client *s3.Client, bucketName string, key string) (bool, error) {
 	// ファイルの存在チェック
-	output, _ := s3Client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
+	output, err := s3Client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket:  aws.String(bucketName),
 		Prefix:  aws.String(key),
 		MaxKeys: aws.Int32(1),
 	})
 	// fmt.Printf("%s/%s の存在チェック結果: %v\n", bucketName, key, existsFile)
+	if err != nil {
+		return false, err
+	}
 
-	return len(output.Contents) > 0
+	return len(output.Contents) > 0, nil
 }
 
 func GetS3Object(s3Client *s3.Client, bucketName string, key string) (*s3.GetObjectOutput, error) {
