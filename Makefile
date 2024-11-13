@@ -1,4 +1,4 @@
-.PHONY: xbrl local terraform zip localstack lint fmt
+.PHONY: xbrl local terraform zip localstack lint fmt air
 # 変数
 GO := go
 APP_DIR := ./scripts
@@ -54,3 +54,7 @@ local-build:
 
 local-lambda-update:
   aws --endpoint-url=http://localhost:4566 lambda update-function-code --function-name compass-api-local --zip-file fileb://./tmp/main.zip
+
+air:
+	export ENV=local
+	air
