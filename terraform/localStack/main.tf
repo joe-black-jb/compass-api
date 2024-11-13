@@ -1,7 +1,7 @@
 provider "aws" {
   access_key = "test"
   secret_key = "test"
-  region = "ap-northeast-1"
+  region     = "ap-northeast-1"
 
   # only required for non virtual hosted-style endpoint use case.
   # https://registry.terraform.io/providers/hashicorp/aws/latest/docs#s3_use_path_style
@@ -11,13 +11,13 @@ provider "aws" {
   skip_requesting_account_id  = true
 
   endpoints {
-    apigateway     = "http://localhost:4566"
-    apigatewayv2   = "http://localhost:4566"
-    dynamodb       = "http://localhost:4566"
-    lambda         = "http://localhost:4566"
-    route53        = "http://localhost:4566"
-    s3             = "http://s3.localhost.localstack.cloud:4566"
-    sts            = "http://localhost:4566"
+    apigateway   = "http://localhost:4566"
+    apigatewayv2 = "http://localhost:4566"
+    dynamodb     = "http://localhost:4566"
+    lambda       = "http://localhost:4566"
+    route53      = "http://localhost:4566"
+    s3           = "http://s3.localhost.localstack.cloud:4566"
+    sts          = "http://localhost:4566"
   }
 }
 
@@ -56,23 +56,23 @@ terraform {
 resource "aws_lambda_function" "test_lambda" {
   function_name = "compass-api-local"
   # ZIP ファイルパス
-  filename      = "${path.module}/../../tmp/main.zip"
-  role          = aws_iam_role.lambda_execution_role.arn
+  filename = "${path.module}/../../tmp/main.zip"
+  role     = aws_iam_role.lambda_execution_role.arn
   # Go のエントリーポイント（Lambda の Handler）
   # air で tmp/main にバイナリが置かれているパスを指定
-  handler       = "tmp/main"
+  handler = "tmp/main"
   # Go ランタイムを使用
-  runtime       = "go1.x"
+  runtime = "go1.x"
   # runtime       = "provided.al2"     # Go ランタイムを使用
   source_code_hash = filebase64sha256("${path.module}/../../tmp/main.zip")
-  timeout       = 30
+  timeout          = 30
   # role          = "arn:aws:iam::000000000000:role/lambda-exec-role"  # デフォルトの IAM ロール
 
   environment {
     variables = {
-      # BUCKET_NAME = aws_s3_bucket.test_bucket.bucket
-      CF_DOMAIN   = var.cf_domain
-      # FILE_KEY    = aws_s3_bucket_object.stations_file.key
+      BUCKET_NAME      = "compass-reports-bucket"
+      NEWS_BUCKET_NAME = "compass-news-bucket"
+      REGION           = "ap-northeast-1"
     }
   }
 }
@@ -87,7 +87,7 @@ resource "aws_lambda_permission" "allow_s3_trigger" {
 
 # API Gateway (v2 の HTTP は pro のみ使用可能)
 resource "aws_api_gateway_rest_api" "api_gw" {
-  name = "compass-api-gateway-local"
+  name        = "compass-api-gateway-local"
   description = "API Gateway for Lambda function"
 }
 
@@ -143,13 +143,13 @@ resource "aws_api_gateway_deployment" "apigw_deployment" {
 
 # DynamoDB
 resource "aws_dynamodb_table" "compass-dynamodb-table" {
-  name           = "compass_companies"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "id"
+  name         = "compass_companies"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "id"
 
   attribute {
-    name ="id"
-    type ="S"
+    name = "id"
+    type = "S"
   }
 
   attribute {
@@ -234,27 +234,27 @@ EOF
 # IAM ポリシーアタッチメント
 resource "aws_iam_role_policy_attachment" "dynamodb_full_access" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "s3_full_access" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "vpc_cross_account_network_interface_operations" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonVPCCrossAccountNetworkInterfaceOperations"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "lambda_dynamodb_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaDynamoDBExecutionRole"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
 
 # resource "aws_iam_role_policy_attachment" "lambda_invocation_dynamodb" {
@@ -264,10 +264,10 @@ resource "aws_iam_role_policy_attachment" "lambda_dynamodb_execution" {
 
 resource "aws_iam_role_policy_attachment" "lambda_vpc_access_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
 
 resource "aws_iam_role_policy_attachment" "secrets_manager_read_write" {
   policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
-  role     = aws_iam_role.lambda_execution_role.name
+  role       = aws_iam_role.lambda_execution_role.name
 }
