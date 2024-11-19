@@ -16,13 +16,14 @@ type User struct {
 }
 
 type Company struct {
-	ID         string    `json:"id" dynamodbav:"id"`
-	CreatedAt  time.Time `json:"createdAt" dynamodbav:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
-	Name       string    `json:"name" dynamodbav:"name"`
-	EDINETCode string    `json:"edinetCode" dynamodbav:"edinetCode"`
-	BS         int       `json:"bs" dynamodbav:"bs"`
-	PL         int       `json:"pl" dynamodbav:"pl"`
+	ID           string    `json:"id" dynamodbav:"id"`
+	CreatedAt    time.Time `json:"createdAt" dynamodbav:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt" dynamodbav:"updatedAt"`
+	Name         string    `json:"name" dynamodbav:"name"`
+	EDINETCode   string    `json:"edinetCode" dynamodbav:"edinetCode"`
+	SecurityCode string    `json:"securityCode" dynamodbav:"securityCode"`
+	BS           int       `json:"bs" dynamodbav:"bs"`
+	PL           int       `json:"pl" dynamodbav:"pl"`
 }
 
 type Title struct {

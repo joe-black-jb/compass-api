@@ -18,7 +18,7 @@ func GetCompaniesGin(c *gin.Context) {
 }
 
 func GetCompanyGin(c *gin.Context) {
-	companyId := c.Query("companyId")
+	companyId := c.Param("id")
 	company, err := GetCompanyProcessor(companyId)
 	if err != nil {
 		c.IndentedJSON(http.StatusInternalServerError, err.Error())

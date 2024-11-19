@@ -29,6 +29,11 @@ resource "aws_dynamodb_table" "compass-dynamodb-table" {
     type = "N"
   }
 
+  attribute {
+    name = "securityCode"
+    type = "S"
+  }
+
   global_secondary_index {
     name               = "CompanyNameIndex"
     hash_key           = "name"
