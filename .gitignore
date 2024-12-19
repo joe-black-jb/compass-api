@@ -17,3 +17,4 @@ retryReports.json
 /localstack-data
 local.go
 *data.json
+/scripts
